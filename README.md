@@ -154,9 +154,12 @@ pnpm --dir apps/api install
 pnpm --dir apps/api dev
 pnpm --dir apps/web install
 pnpm --dir apps/web dev
+pnpm --dir apps/web smoke:ui
 ```
 
 Swap `pnpm` for `npm`, `yarn`, or `bun` if `project.package_manager` says otherwise.
+The frontend smoke runner builds the generated app, serves the preview bundle locally, and checks
+that the core UI shell and generated state made it into the shipped asset.
 
 ## Generated Project Layout
 
@@ -317,6 +320,7 @@ cargo audit
 ```
 
 GitHub Actions runs the same checks from `.github/workflows/ci.yml`.
+It also generates a fresh frontend scaffold and runs the frontend smoke runner against it.
 
 ## Community and Contribution
 

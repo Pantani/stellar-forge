@@ -23,10 +23,13 @@ fn init_writes_expected_project_scaffold() {
     let release_script = read(root.join("scripts/release.mjs"));
     let doctor_script = read(root.join("scripts/doctor.mjs"));
     let worker = read(root.join("workers/events/ingest-events.mjs"));
+    let web_package = read(root.join("apps/web/package.json"));
+    let web_smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
     assert!(root.join("stellarforge.toml").exists());
     assert!(root.join("stellarforge.lock.json").exists());
     assert!(root.join("apps/api/package.json").exists());
     assert!(root.join("apps/web/src/main.tsx").exists());
+    assert!(root.join("apps/web/scripts/ui-smoke.mjs").exists());
     assert!(root.join("contracts/app/Cargo.toml").exists());
     assert!(root.join("contracts/app/rust-toolchain.toml").exists());
     assert!(root.join("scripts/reseed.mjs").exists());
@@ -41,6 +44,11 @@ fn init_writes_expected_project_scaffold() {
     assert!(doctor_script.contains("['doctor'"));
     assert!(worker.contains("'events'"));
     assert!(worker.contains("'backfill'"));
+    assert!(web_package.contains("\"smoke:ui\""));
+    assert!(web_package.contains("\"preview\""));
+    assert!(web_smoke_runner.contains("vite build"));
+    assert!(web_smoke_runner.contains("vite preview"));
+    assert!(web_smoke_runner.contains("UI smoke passed"));
     if stellar_available() {
         assert!(root.join("Cargo.toml").exists());
         assert!(root.join("contracts/app/Makefile").exists());
@@ -62,6 +70,7 @@ fn rewards_template_writes_domain_specific_contract_files() {
     let api_store = read(root.join("apps/api/src/lib/events-store.ts"));
     let web_main = read(root.join("apps/web/src/main.tsx"));
     let web_state = read(root.join("apps/web/src/generated/stellar.ts"));
+    let web_smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
 
     assert!(manifest.contains("[contracts.rewards.init]"));
     assert!(manifest.contains("token = \"@token:points:sac\""));
@@ -91,6 +100,8 @@ fn rewards_template_writes_domain_specific_contract_files() {
     assert!(web_main.contains("stellarState.wallets"));
     assert!(web_main.contains("stellarState.api?.enabled"));
     assert!(web_main.contains("stellar forge release deploy"));
+    assert!(web_smoke_runner.contains("expectedMarkers"));
+    assert!(web_smoke_runner.contains("project name"));
     assert!(web_state.contains("\"environment\": \"testnet\""));
     assert!(web_state.contains("\"network\": {"));
     assert!(web_state.contains("\"api\": {"));
@@ -586,14 +597,19 @@ fn project_add_frontend_generates_scaffold_and_reports_paths() {
     );
 
     let manifest = read(root.join("stellarforge.toml"));
+    let web_package = read(root.join("apps/web/package.json"));
     let web_main = read(root.join("apps/web/src/main.tsx"));
     let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
+    let smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
 
     assert!(manifest.contains("[frontend]"));
     assert!(manifest.contains("framework = \"react-vite\""));
     assert!(root.join("apps/web/index.html").exists());
+    assert!(root.join("apps/web/scripts/ui-smoke.mjs").exists());
+    assert!(web_package.contains("\"smoke:ui\""));
     assert!(web_main.contains("stellarState.project.name"));
     assert!(generated_state.contains("stellarState"));
+    assert!(smoke_runner.contains("stellar forge release "));
 }
 
 #[test]
@@ -761,6 +777,8 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     fs::write(root.join("apps/api/openapi.json"), "{}\n").expect("openapi should be overwritten");
     fs::write(root.join("apps/web/src/generated/stellar.ts"), "BROKEN\n")
         .expect("frontend state should be overwritten");
+    fs::write(root.join("apps/web/scripts/ui-smoke.mjs"), "BROKEN\n")
+        .expect("frontend smoke runner should be overwritten");
 
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
@@ -793,11 +811,13 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     let contract_service = read(root.join("apps/api/src/services/contracts/rewards.ts"));
     let openapi = read(root.join("apps/api/openapi.json"));
     let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
+    let smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
 
     assert!(env_example.contains("STELLAR_NETWORK=testnet"));
     assert!(contract_service.contains("/contracts/rewards/call/:fn"));
     assert!(openapi.contains("/contracts/rewards/call/{fn}"));
     assert!(generated_state.contains("stellarState"));
+    assert!(smoke_runner.contains("UI smoke passed"));
 }
 
 #[test]
@@ -3550,6 +3570,8 @@ fn doctor_project_reports_contract_openapi_and_events_config_drift() {
         .expect("openapi should be removable for the test");
     fs::remove_file(root.join("apps/web/index.html"))
         .expect("frontend index should be removable for the test");
+    fs::remove_file(root.join("apps/web/scripts/ui-smoke.mjs"))
+        .expect("frontend smoke runner should be removable for the test");
     fs::write(
         root.join("apps/api/.env"),
         "STELLAR_EVENTS_RESOURCES=contract:missing\n",
@@ -3570,6 +3592,10 @@ fn doctor_project_reports_contract_openapi_and_events_config_drift() {
     assert_eq!(find_check(&json, "contract:rewards:src")["status"], "error");
     assert_eq!(find_check(&json, "api:openapi")["status"], "error");
     assert_eq!(find_check(&json, "frontend:index")["status"], "error");
+    assert_eq!(
+        find_check(&json, "frontend:ui-smoke-runner")["status"],
+        "error"
+    );
     assert_eq!(find_check(&json, "events:config")["status"], "warn");
     assert!(
         find_check(&json, "events:config")["detail"]

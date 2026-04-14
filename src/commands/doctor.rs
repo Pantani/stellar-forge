@@ -816,6 +816,10 @@ fn append_project_scaffold_checks(report: &mut CommandReport, root: &Path, manif
             ("frontend:index", root.join("apps/web/index.html")),
             ("frontend:entry", root.join("apps/web/src/main.tsx")),
             (
+                "frontend:ui-smoke-runner",
+                root.join("apps/web/scripts/ui-smoke.mjs"),
+            ),
+            (
                 "frontend:generated-state",
                 root.join("apps/web/src/generated/stellar.ts"),
             ),
@@ -1045,6 +1049,12 @@ fn append_project_generated_file_checks(
             "frontend:generated-state:consistency",
             &root.join("apps/web/src/generated/stellar.ts"),
             &templates::web_generated_state(manifest, &lockfile, &event_cursors, &env_name),
+        ));
+        report.checks.push(generated_file_consistency_check(
+            context,
+            "frontend:ui-smoke-runner:consistency",
+            &root.join("apps/web/scripts/ui-smoke.mjs"),
+            templates::web_ui_smoke_runner(),
         ));
     }
 

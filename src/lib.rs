@@ -406,3 +406,77 @@ fn first_backticked(message: &str) -> Option<&str> {
 fn contains_any(message: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|pattern| message.contains(pattern))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        classify_error, first_backticked, runtime_error_report, split_causes, suggest_next_steps,
+    };
+    use anyhow::anyhow;
+
+    #[test]
+    fn classify_error_prefers_network_signals_over_generic_invalid_text() {
+        let error = anyhow!("invalid JSON from https://rpc.example");
+        let class = classify_error(&error);
+
+        assert_eq!(class.code, "network");
+        assert_eq!(class.exit_code, 4);
+    }
+
+    #[test]
+    fn runtime_error_report_includes_state_classification_causes_and_next_steps() {
+        let error = anyhow!("wallet payment failed: token `points` needs a sac: lockfile missing");
+        let report = runtime_error_report("wallet.pay", &error);
+        let data = report.data.expect("report should include structured data");
+
+        assert_eq!(report.status, "error");
+        assert_eq!(
+            report.next,
+            vec!["stellar forge token sac deploy points".to_string()]
+        );
+        assert_eq!(data["error_code"], "state");
+        assert_eq!(data["exit_code"], 9);
+        assert_eq!(
+            data["causes"]
+                .as_array()
+                .expect("causes should be an array")
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "wallet payment failed",
+                "token `points` needs a sac",
+                "lockfile missing",
+            ]
+        );
+    }
+
+    #[test]
+    fn suggest_next_steps_uses_backticked_wallet_name_for_smart_wallet_conflicts() {
+        let next = suggest_next_steps(
+            "wallet.create",
+            "wallet `vault` already exists as a smart wallet",
+        );
+
+        assert_eq!(
+            next,
+            vec!["stellar forge wallet smart info vault".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_causes_and_first_backticked_extract_structured_parts() {
+        let message = "outer context: inner `value`: leaf detail";
+
+        assert_eq!(
+            split_causes(message),
+            vec![
+                "outer context".to_string(),
+                "inner `value`".to_string(),
+                "leaf detail".to_string(),
+            ]
+        );
+        assert_eq!(first_backticked(message), Some("value"));
+        assert_eq!(first_backticked("no marker here"), None);
+    }
+}

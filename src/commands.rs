@@ -2608,6 +2608,7 @@ fn sync_frontend_scaffold(
     let web_root = root.join("apps/web");
     context.ensure_dir(report, &web_root.join("src"))?;
     context.ensure_dir(report, &web_root.join("src/generated"))?;
+    context.ensure_dir(report, &web_root.join("scripts"))?;
     context.write_text(
         report,
         &web_root.join("package.json"),
@@ -2622,6 +2623,11 @@ fn sync_frontend_scaffold(
         report,
         &web_root.join("src/main.tsx"),
         &templates::web_main(manifest),
+    )?;
+    context.write_text(
+        report,
+        &web_root.join("scripts/ui-smoke.mjs"),
+        templates::web_ui_smoke_runner(),
     )?;
     sync_frontend_generated_state(context, report, root, manifest, &manifest.defaults.network)?;
     Ok(())
@@ -4876,4 +4882,187 @@ fn hex_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        aggregate_status, amount_to_stroops, artifact_token, contract_fetch_output_path,
+        detect_package_manager, friendbot_url, parse_alias_map, parse_binding_package_directory,
+        project_sync_next_steps,
+    };
+    use crate::model::{ApiConfig, FrontendConfig, Manifest, NetworkConfig, ProjectConfig};
+    use crate::runtime::check;
+    use std::fs;
+    use tempfile::tempdir;
+    use toml::Value as TomlValue;
+
+    #[test]
+    fn detect_package_manager_prefers_pnpm_lockfiles() {
+        let root = tempdir().expect("tempdir should be created");
+        fs::write(root.path().join("package-lock.json"), "")
+            .expect("package-lock should be written");
+        fs::write(root.path().join("pnpm-lock.yaml"), "").expect("pnpm lock should be written");
+
+        assert_eq!(detect_package_manager(root.path()).as_deref(), Some("pnpm"));
+    }
+
+    #[test]
+    fn parse_binding_package_directory_supports_alias_suffixes() {
+        assert_eq!(
+            parse_binding_package_directory("hello-ts"),
+            Some(("hello".to_string(), "typescript".to_string()))
+        );
+        assert_eq!(
+            parse_binding_package_directory("hello-python"),
+            Some(("hello".to_string(), "python".to_string()))
+        );
+        assert_eq!(
+            parse_binding_package_directory("hello-rust"),
+            Some(("hello".to_string(), "rust".to_string()))
+        );
+        assert_eq!(parse_binding_package_directory("hello"), None);
+    }
+
+    #[test]
+    fn parse_alias_map_supports_string_contract_and_alias_forms() {
+        let value: TomlValue = toml::from_str(
+            r#"
+foo = "foo-test"
+
+[bar]
+contract = "bar-contract"
+
+[baz]
+alias = "baz-test"
+
+[qux]
+name = "qux-main"
+"#,
+        )
+        .expect("toml should parse");
+
+        let aliases = parse_alias_map(Some(&value));
+
+        assert_eq!(aliases.get("foo").map(String::as_str), Some("foo-test"));
+        assert_eq!(aliases.get("bar-contract").map(String::as_str), Some("bar"));
+        assert_eq!(aliases.get("baz").map(String::as_str), Some("baz-test"));
+        assert_eq!(aliases.get("qux").map(String::as_str), Some("qux-main"));
+    }
+
+    #[test]
+    fn project_sync_next_steps_only_include_enabled_apps() {
+        let manifest = Manifest {
+            project: ProjectConfig {
+                package_manager: "bun".to_string(),
+                ..ProjectConfig::default()
+            },
+            api: Some(ApiConfig {
+                enabled: true,
+                ..ApiConfig::default()
+            }),
+            frontend: Some(FrontendConfig {
+                enabled: false,
+                ..FrontendConfig::default()
+            }),
+            ..Manifest::default()
+        };
+
+        assert_eq!(
+            project_sync_next_steps(&manifest),
+            vec![
+                "stellar forge project validate".to_string(),
+                "bun --cwd apps/api run dev".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn artifact_paths_sanitize_contract_names() {
+        assert_eq!(artifact_token("hello/world:prod"), "hello-world-prod");
+        assert_eq!(
+            contract_fetch_output_path(std::path::Path::new("/tmp/demo"), "testnet", "hello/world")
+                .display()
+                .to_string(),
+            "/tmp/demo/dist/contracts/hello-world.testnet.wasm"
+        );
+    }
+
+    #[test]
+    fn friendbot_url_uses_expected_endpoints_and_rejects_unsupported_networks() {
+        let local = NetworkConfig {
+            kind: "local".to_string(),
+            horizon_url: "http://localhost:8000/".to_string(),
+            ..NetworkConfig::default()
+        };
+        let testnet = NetworkConfig {
+            kind: "testnet".to_string(),
+            ..NetworkConfig::default()
+        };
+        let pubnet = NetworkConfig {
+            kind: "pubnet".to_string(),
+            ..NetworkConfig::default()
+        };
+
+        assert_eq!(
+            friendbot_url("local", &local, "GABC")
+                .expect("local friendbot should resolve")
+                .as_str(),
+            "http://localhost:8000/friendbot?addr=GABC"
+        );
+        assert_eq!(
+            friendbot_url("testnet", &testnet, "GABC")
+                .expect("testnet friendbot should resolve")
+                .as_str(),
+            "https://friendbot.stellar.org/?addr=GABC"
+        );
+        assert!(
+            friendbot_url("pubnet", &pubnet, "GABC")
+                .expect_err("pubnet should not have friendbot")
+                .to_string()
+                .contains("friendbot is not available")
+        );
+    }
+
+    #[test]
+    fn amount_to_stroops_normalizes_values_and_rejects_invalid_precision() {
+        assert_eq!(
+            amount_to_stroops("001.23", 2).expect("amount should normalize"),
+            "123"
+        );
+        assert_eq!(
+            amount_to_stroops("2", 4).expect("whole amount should pad"),
+            "20000"
+        );
+        assert_eq!(
+            amount_to_stroops("0.000", 3).expect("zero should remain zero"),
+            "0"
+        );
+
+        assert!(
+            amount_to_stroops("1.234", 2)
+                .expect_err("precision overflow should fail")
+                .to_string()
+                .contains("more than 2 decimal places")
+        );
+        assert!(
+            amount_to_stroops("-1", 2)
+                .expect_err("negative amounts should fail")
+                .to_string()
+                .contains("negative amounts are not supported")
+        );
+    }
+
+    #[test]
+    fn aggregate_status_prioritizes_error_over_warn_and_warn_over_ok() {
+        assert_eq!(
+            aggregate_status(&[check("format", "ok", None), check("lint", "warn", None),]),
+            "warn"
+        );
+        assert_eq!(
+            aggregate_status(&[check("format", "warn", None), check("tests", "error", None),]),
+            "error"
+        );
+        assert_eq!(aggregate_status(&[check("tests", "ok", None)]), "ok");
+    }
 }
