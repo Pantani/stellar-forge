@@ -1,0 +1,27 @@
+/target/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100/
+.Trashes/
+
+# IDEs and editors
+.idea/
+.vscode/
+.fleet/
+*.iml
+*.suo
+*.user
+*.userossc
+*.sln.docstates
+*.swp
+*.swo
+*~
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
