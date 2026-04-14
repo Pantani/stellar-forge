@@ -1,0 +1,36 @@
+name: Support question
+description: Ask for help using stellar-forge or diagnosing setup problems
+title: "[Support]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For usage questions, the fastest answers usually come with exact commands and the output you already tried.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      placeholder: I am trying to add a second contract to an existing project and regenerate bindings.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you tried?
+      description: Include commands, docs you followed, and any output that looked suspicious.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, and installed Stellar tooling.
+      placeholder: Ubuntu 24.04, rustc 1.89.0, stellar CLI 22.x
+    validations:
+      required: true

@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible defect in stellar-forge
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+        Please include enough detail for someone else to reproduce the problem quickly.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A short description of the problem and why it matters.
+      placeholder: Running `stellar forge project validate` exits with an error even though the manifest is valid.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, inputs, and any relevant files or config snippets.
+      placeholder: |
+        1. Run `stellar forge init demo --template fullstack`
+        2. Edit `stellarforge.toml` to ...
+        3. Run `stellar forge ...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: stellar-forge version
+      description: Output of `stellar-forge --version` or the git commit you built from.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, and whether the official `stellar` CLI is installed.
+      placeholder: macOS 15, rustc 1.89.0, stellar CLI 22.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste terminal output, JSON reports, or screenshots if they help.
+      render: shell

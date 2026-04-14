@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an improvement to the CLI, scaffolds, or docs
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea.
+        The most helpful requests explain the workflow you are trying to improve, not only the shape of the feature.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What workflow is missing or painful?
+      placeholder: I can generate a contract scaffold, but I cannot ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: Add a `stellar forge ...` command or manifest option that ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, adjacent tools, or reasons to keep the current behavior.
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Links, examples, screenshots, or real project context.

@@ -318,6 +318,16 @@ cargo audit
 
 GitHub Actions runs the same checks from `.github/workflows/ci.yml`.
 
+## Community and Contribution
+
+- contribution workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
+- support and troubleshooting channels: [SUPPORT.md](SUPPORT.md)
+- responsible disclosure process: [SECURITY.md](SECURITY.md)
+- expected project behavior: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+
+GitHub issue forms, a pull request template, Dependabot updates, and CI all live in `.github/` so
+new changes follow the same path from report to review to validation.
+
 ## Troubleshooting
 
 ### `stellar forge` does not appear in `stellar plugin ls`

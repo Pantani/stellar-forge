@@ -1,15 +1,27 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   quality:
+    name: Quality gates
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,23 +29,40 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component clippy rustfmt
 
+      - name: Set stable toolchain as default
+        run: rustup default stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: Check compilation
+        run: cargo check --locked --all-targets --all-features
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
 
   security:
+    name: Security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
+
+      - name: Set stable toolchain as default
+        run: rustup default stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
