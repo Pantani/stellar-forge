@@ -45,7 +45,7 @@ question.
 
 1. [Command reference: `wallet`](command-reference.md#wallet)
 2. [Manifest reference: smart-wallet example](manifest-reference.md#smart-wallet-example)
-3. [README input file examples](../README.md#input-file-examples)
+3. [Command reference input file examples](command-reference.md#input-file-examples)
 
 ### Release and recovery
 
@@ -94,5 +94,5 @@ Go to [deployment-guide.md](deployment-guide.md).
 
 ### I want examples of batch files or policy files
 
-Start in [README input file examples](../README.md#input-file-examples), then use the matching
+Start in [command-reference input file examples](command-reference.md#input-file-examples), then use the matching
 sections in [command-reference.md](command-reference.md).
