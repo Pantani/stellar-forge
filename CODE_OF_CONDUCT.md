@@ -13,6 +13,18 @@ Participants are expected to:
 - give newcomers room to learn and experienced contributors room to disagree constructively
 - avoid harassment, discrimination, personal attacks, and sustained antagonistic behavior
 
+## Examples of good participation
+
+Healthy project behavior often looks like:
+
+- asking clarifying questions before assuming intent
+- explaining why a change is risky instead of just labeling it bad
+- suggesting concrete follow-up steps when you reject an approach
+- keeping review comments specific to behavior, tests, docs, or maintainability
+- acknowledging uncertainty when the facts are incomplete
+
+You do not need to agree with someone to treat them well.
+
 ## Unacceptable behavior
 
 The following behavior is not acceptable in project spaces:
@@ -29,14 +41,32 @@ The following behavior is not acceptable in project spaces:
 This code of conduct applies to repository issues, pull requests, review comments, discussions, and
 other spaces that are directly tied to this project.
 
-## Reporting and enforcement
+## Reporting and moderation
 
 If you experience or witness behavior that violates this code of conduct, contact the maintainers
 privately using the best available contact method on the repository owner profile.
-Include links, screenshots, or other context that can help reconstruct what happened.
 
-Maintainers may remove content, freeze threads, close issues, reject contributions, or temporarily
-or permanently restrict participation when needed to protect the project and its contributors.
+Please include:
+
+- links to the relevant thread or comment
+- screenshots if something may be edited or deleted
+- any surrounding context that helps reconstruct what happened
+
+If you are not sure whether something crosses the line, you can still ask.
+
+## Enforcement
+
+Maintainers may take actions such as:
+
+- asking participants to pause or cool down
+- removing comments or other content
+- freezing or locking threads
+- closing issues or discussions
+- rejecting contributions
+- temporarily or permanently restricting participation
+
+The goal of enforcement is to protect the project and the people participating in it, not to score
+points in a conflict.
 
 ## Project values
 

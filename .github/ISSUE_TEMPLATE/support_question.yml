@@ -7,10 +7,17 @@ body:
   - type: markdown
     attributes:
       value: |
-        For usage questions, the fastest answers usually come with exact commands and the output you already tried.
+        For usage questions, the fastest answers usually come with exact commands, the docs you followed, and the output you already saw.
+
+        Before filing, please check:
+        - `README.md`
+        - `docs/README.md`
+        - `docs/command-reference.md`
+        - `docs/manifest-reference.md`
+        - `docs/deployment-guide.md`
 
   - type: textarea
-    id: question
+    id: goal
     attributes:
       label: What are you trying to do?
       placeholder: I am trying to add a second contract to an existing project and regenerate bindings.
@@ -18,19 +25,58 @@ body:
       required: true
 
   - type: textarea
-    id: context
+    id: commands
     attributes:
-      label: What have you tried?
-      description: Include commands, docs you followed, and any output that looked suspicious.
+      label: Exact commands you ran
+      description: Include the exact command history that leads to the problem.
+      placeholder: |
+        stellar forge project add contract escrow --template escrow
+        stellar forge contract build escrow
       render: shell
     validations:
       required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you tried already?
+      description: Include docs you followed, reports you generated, and anything that looked suspicious.
+      placeholder: |
+        I followed docs/command-reference.md and then ran:
+        stellar forge doctor
+        stellar forge project validate --out dist/project.validate.json
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config or input snippet
+      description: Paste the smallest relevant section of `stellarforge.toml` or an input file.
+      render: toml
 
   - type: input
     id: environment
     attributes:
       label: Environment
       description: OS, Rust version, and installed Stellar tooling.
-      placeholder: Ubuntu 24.04, rustc 1.89.0, stellar CLI 22.x
+      placeholder: Ubuntu 24.04, rustc 1.89.0, stellar CLI 22.x, Docker installed
     validations:
       required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste terminal output, report snippets, or screenshots.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Quick checks
+      options:
+        - label: I ran `stellar forge doctor`
+        - label: I ran `stellar forge project validate` if this is a workspace issue
+        - label: I checked the docs listed above before filing

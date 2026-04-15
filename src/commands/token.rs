@@ -1,30 +1,76 @@
 use super::*;
+use crate::cli::{
+    TokenAirdropArgs, TokenAirdropReconcileArgs, TokenAirdropResumeArgs, WalletBatchPayArgs,
+    WalletBatchResumeArgs,
+};
 
 pub(super) fn token_command(context: &AppContext, command: TokenCommand) -> Result<CommandReport> {
-    match command {
+    let out = token_command_output_path(&command);
+    let mut report = match command {
         TokenCommand::Create(args) => token_create(context, &args),
-        TokenCommand::Info { name } => token_info(context, &name),
+        TokenCommand::Info { name, .. } => token_info(context, &name),
+        TokenCommand::Airdrop(args) => token_airdrop(context, &args),
+        TokenCommand::AirdropReconcile(args) => token_airdrop_reconcile(context, &args),
+        TokenCommand::AirdropResume(args) => token_airdrop_resume(context, &args),
+        TokenCommand::AirdropReport(args) => token_airdrop_report(context, &args),
+        TokenCommand::AirdropValidate(args) => token_airdrop_validate(context, &args),
+        TokenCommand::AirdropPreview(args) => token_airdrop_preview(context, &args),
+        TokenCommand::AirdropSummary(args) => token_airdrop_summary(context, &args),
         TokenCommand::Mint(args) => token_mint(context, &args),
         TokenCommand::Burn(args) => token_burn(context, &args),
         TokenCommand::Transfer(args) => token_transfer(context, &args),
-        TokenCommand::Trust { name, wallet } => wallet::wallet_trust(context, &wallet, &name),
-        TokenCommand::Freeze { name, holder } => {
+        TokenCommand::Trust { name, wallet, .. } => wallet::wallet_trust(context, &wallet, &name),
+        TokenCommand::Freeze { name, holder, .. } => {
             token_authorization(context, &name, &holder, false)
         }
-        TokenCommand::Unfreeze { name, holder } => {
+        TokenCommand::Unfreeze { name, holder, .. } => {
             token_authorization(context, &name, &holder, true)
         }
-        TokenCommand::Clawback { name, from, amount } => {
-            token_clawback(context, &name, &from, &amount)
-        }
+        TokenCommand::Clawback {
+            name, from, amount, ..
+        } => token_clawback(context, &name, &from, &amount),
         TokenCommand::Sac(args) => match args.command {
-            TokenSacCommand::Id { name } => token_sac_id(context, &name),
-            TokenSacCommand::Deploy { name } => token_sac_deploy(context, &name),
+            TokenSacCommand::Id { name, .. } => token_sac_id(context, &name),
+            TokenSacCommand::Deploy { name, .. } => token_sac_deploy(context, &name),
         },
         TokenCommand::Contract(args) => match args.command {
-            crate::cli::TokenContractCommand::Init { name } => token_contract_init(context, &name),
+            crate::cli::TokenContractCommand::Init { name, .. } => {
+                token_contract_init(context, &name)
+            }
         },
-        TokenCommand::Balance { name, holder } => token_balance(context, &name, holder.as_deref()),
+        TokenCommand::Balance(args) => token_balance(context, &args.name, args.holder.as_deref()),
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn token_command_output_path(command: &TokenCommand) -> Option<PathBuf> {
+    match command {
+        TokenCommand::Create(args) => args.out.clone(),
+        TokenCommand::Info { out, .. } => out.clone(),
+        TokenCommand::Airdrop(args)
+        | TokenCommand::AirdropReport(args)
+        | TokenCommand::AirdropValidate(args)
+        | TokenCommand::AirdropPreview(args)
+        | TokenCommand::AirdropSummary(args) => args.out.clone(),
+        TokenCommand::AirdropReconcile(args) => args.out.clone(),
+        TokenCommand::AirdropResume(args) => args.out.clone(),
+        TokenCommand::Mint(args) | TokenCommand::Transfer(args) => args.out.clone(),
+        TokenCommand::Burn(args) => args.out.clone(),
+        TokenCommand::Trust { out, .. } => out.clone(),
+        TokenCommand::Freeze { out, .. } => out.clone(),
+        TokenCommand::Unfreeze { out, .. } => out.clone(),
+        TokenCommand::Clawback { out, .. } => out.clone(),
+        TokenCommand::Sac(args) => match &args.command {
+            TokenSacCommand::Id { out, .. } => out.clone(),
+            TokenSacCommand::Deploy { out, .. } => out.clone(),
+        },
+        TokenCommand::Contract(args) => match &args.command {
+            crate::cli::TokenContractCommand::Init { out, .. } => out.clone(),
+        },
+        TokenCommand::Balance(args) => args.out.clone(),
     }
 }
 
@@ -94,6 +140,7 @@ fn token_create(context: &AppContext, args: &TokenCreateArgs) -> Result<CommandR
                     to: args.distribution.clone(),
                     amount: args.initial_supply.clone(),
                     from: Some(args.issuer.clone()),
+                    out: None,
                 },
             )?;
         }
@@ -172,6 +219,171 @@ fn token_info(context: &AppContext, name: &str) -> Result<CommandReport> {
     Ok(report)
 }
 
+fn token_airdrop(context: &AppContext, args: &TokenAirdropArgs) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let mut report = wallet::wallet_batch_pay(context, &token_airdrop_batch_args(args, &from))?;
+    report.action = "token.airdrop".to_string();
+    report.message = Some(format!(
+        "processed token airdrop entries for `{}`",
+        args.name
+    ));
+    if let Some(data) = report.data.as_mut().and_then(Value::as_object_mut) {
+        data.insert("token".to_string(), json!(args.name));
+        data.insert("from".to_string(), json!(from));
+    }
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_report(
+    context: &AppContext,
+    args: &TokenAirdropArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let mut report = wallet::wallet_batch_report(context, &token_airdrop_batch_args(args, &from))?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-report");
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_reconcile(
+    _context: &AppContext,
+    args: &TokenAirdropReconcileArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let batch_args = token_airdrop_reconcile_batch_args(args, &from);
+    let mut report = wallet::wallet_batch_reconcile(&batch_args, &args.report)?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-reconcile");
+    report.message = Some(format!(
+        "reconciled token airdrop entries for `{}`",
+        args.name
+    ));
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_resume(
+    context: &AppContext,
+    args: &TokenAirdropResumeArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let batch_args = token_airdrop_resume_batch_args(args, &from);
+    let mut report = wallet::wallet_batch_resume(context, &batch_args)?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-resume");
+    report.message = Some(format!("resumed token airdrop entries for `{}`", args.name));
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_validate(
+    context: &AppContext,
+    args: &TokenAirdropArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let mut report =
+        wallet::wallet_batch_validate(context, &token_airdrop_batch_args(args, &from))?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-validate");
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_preview(
+    context: &AppContext,
+    args: &TokenAirdropArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let mut report = wallet::wallet_batch_preview(context, &token_airdrop_batch_args(args, &from))?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-preview");
+    Ok(report)
+}
+
+pub(crate) fn token_airdrop_summary(
+    context: &AppContext,
+    args: &TokenAirdropArgs,
+) -> Result<CommandReport> {
+    let from = args.from.clone().unwrap_or_else(|| "treasury".to_string());
+    let mut report = wallet::wallet_batch_summary(context, &token_airdrop_batch_args(args, &from))?;
+    token_airdrop_rewrite_report(&mut report, &args.name, &from, "token.airdrop-summary");
+    Ok(report)
+}
+
+fn token_airdrop_batch_args(args: &TokenAirdropArgs, from: &str) -> WalletBatchPayArgs {
+    let defaults = token_airdrop_batch_defaults(&args.name, from, &args.file, &args.format);
+    WalletBatchPayArgs {
+        from: defaults.from,
+        file: defaults.file,
+        out: None,
+        asset: defaults.asset,
+        format: defaults.format,
+        sep7: args.sep7,
+        build_only: args.build_only,
+        relayer: args.relayer,
+    }
+}
+
+fn token_airdrop_reconcile_batch_args(
+    args: &TokenAirdropReconcileArgs,
+    from: &str,
+) -> WalletBatchPayArgs {
+    let defaults = token_airdrop_batch_defaults(&args.name, from, &args.file, &args.format);
+    WalletBatchPayArgs {
+        from: defaults.from,
+        file: defaults.file,
+        out: None,
+        asset: defaults.asset,
+        format: defaults.format,
+        sep7: false,
+        build_only: false,
+        relayer: false,
+    }
+}
+
+fn token_airdrop_resume_batch_args(
+    args: &TokenAirdropResumeArgs,
+    from: &str,
+) -> WalletBatchResumeArgs {
+    let defaults = token_airdrop_batch_defaults(&args.name, from, &args.file, &args.format);
+    WalletBatchResumeArgs {
+        from: defaults.from,
+        file: defaults.file,
+        report: args.report.clone(),
+        out: None,
+        asset: defaults.asset,
+        format: defaults.format,
+        start_at: args.start_at,
+        skip: args.skip.clone(),
+        sep7: args.sep7,
+        build_only: args.build_only,
+        relayer: args.relayer,
+    }
+}
+
+fn token_airdrop_batch_defaults(
+    token: &str,
+    from: &str,
+    file: &Path,
+    format: &Option<String>,
+) -> TokenAirdropBatchDefaults {
+    TokenAirdropBatchDefaults {
+        from: from.to_string(),
+        file: file.to_path_buf(),
+        asset: Some(token.to_string()),
+        format: format.clone(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TokenAirdropBatchDefaults {
+    from: String,
+    file: PathBuf,
+    asset: Option<String>,
+    format: Option<String>,
+}
+
+fn token_airdrop_rewrite_report(report: &mut CommandReport, token: &str, from: &str, action: &str) {
+    report.action = action.to_string();
+    report.message = Some(format!("processed token airdrop entries for `{token}`"));
+    if let Some(data) = report.data.as_mut().and_then(Value::as_object_mut) {
+        data.insert("token".to_string(), json!(token));
+        data.insert("from".to_string(), json!(from));
+    }
+}
+
 fn token_mint(context: &AppContext, args: &TokenMoveArgs) -> Result<CommandReport> {
     let manifest = load_manifest(context)?;
     let env = manifest
@@ -197,6 +409,7 @@ fn token_mint(context: &AppContext, args: &TokenMoveArgs) -> Result<CommandRepor
             to: args.to.clone(),
             amount: args.amount.clone(),
             from: Some(from),
+            out: None,
         },
     )
 }
@@ -212,6 +425,7 @@ fn token_transfer(context: &AppContext, args: &TokenMoveArgs) -> Result<CommandR
             sep7: false,
             build_only: false,
             relayer: false,
+            out: None,
         },
     )
 }
@@ -250,6 +464,7 @@ fn token_burn(context: &AppContext, args: &TokenBurnArgs) -> Result<CommandRepor
             sep7: false,
             build_only: false,
             relayer: false,
+            out: None,
         },
     )?;
     let mut report = CommandReport::new("token.burn");

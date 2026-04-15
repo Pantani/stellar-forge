@@ -39,6 +39,38 @@ Also verify:
 - Docker is available if you are deploying to `local`
 - API/front-end consumers know whether they should read `.env.generated` or `dist/deploy.<env>.json`
 
+If the workspace includes a generated frontend, run the smoke checks before release work moves any
+further:
+
+```bash
+stellar forge project smoke
+stellar forge project smoke --browser
+```
+
+Use `project smoke` for the lighter repo-level check. Add `--browser` when you want the browser
+runner to exercise the frontend in Playwright as part of release readiness. On fresh machines or
+clean worktrees, `--install` is the safest version because it adds the package-manager install step
+before the smoke run.
+
+## Preflight Matrix
+
+Use this as a quick "am I ready?" grid before touching a real environment:
+
+| Check | Local | Testnet | Futurenet | Pubnet |
+| --- | --- | --- | --- | --- |
+| `stellar forge doctor` | recommended | required | required | required |
+| `stellar forge project validate` | required | required | required | required |
+| `stellar forge contract build` | usually required | required | required | required |
+| `stellar forge project smoke` | useful for generated apps | recommended | recommended | strongly recommended |
+| `stellar forge project smoke --browser` | useful for frontend changes | recommended before release | recommended before release | strongly recommended before release |
+| `stellar forge --dry-run release plan <env>` | recommended | required | required | required |
+| dedicated deploy identity checked | optional | required | required | required |
+| friendbot availability expected | n/a | yes | environment-specific | no |
+| `--confirm-mainnet` required | no | no | no | yes |
+
+If any of the required checks fail, fix that first. A deploy plan is only as trustworthy as the
+workspace and local toolchain it is reading from.
+
 ## Environment Strategy
 
 ### Local
@@ -52,7 +84,30 @@ stellar forge dev up
 stellar forge dev reseed --network local
 stellar forge dev status
 stellar forge release verify local
+stellar forge project smoke --browser
 ```
+
+For frontend changes, use the browser smoke scripts in `apps/web` directly when you want to split
+the cost across steps:
+
+```bash
+pnpm --dir apps/web smoke:browser:build
+pnpm --dir apps/web smoke:browser:install
+pnpm --dir apps/web smoke:browser:run
+pnpm --dir apps/web smoke:browser
+```
+
+Recommended use:
+
+- `smoke:browser:build` after UI or generated frontend changes
+- `smoke:browser:install` on a new machine or after clearing the Playwright cache
+- `smoke:browser:run` when the build is already in place and you only need the browser assertion
+- `smoke:browser` when you want the complete browser smoke in one command
+
+The full `smoke:browser` flow checks whether the pinned Chromium bundle is already present in the
+Playwright cache. If it is, the install step is skipped. If not, Chromium is installed before the
+browser test runs. If port `4173` is already in use, rerun with
+`STELLAR_FORGE_BROWSER_SMOKE_PORT=<port>`.
 
 What happens:
 
@@ -131,6 +186,33 @@ stellar forge release aliases sync pubnet
 
 The `--confirm-mainnet` flag is mandatory by design.
 
+## Zero-To-Testnet Playbook
+
+This is the shortest full rehearsal loop from a fresh checkout or new scaffold:
+
+```bash
+stellar forge doctor
+stellar forge project validate
+stellar forge project sync
+stellar forge contract build
+stellar forge project smoke
+stellar forge --dry-run release plan testnet
+stellar forge release deploy testnet
+stellar forge release verify testnet
+stellar forge release env export testnet
+stellar forge release aliases sync testnet
+```
+
+What to inspect after each phase:
+
+- after `doctor`: external tooling and plugin visibility
+- after `project validate`: manifest correctness and generated-file drift
+- after `contract build`: contract workspaces still compile under the current local toolchain
+- after `project smoke`: generated frontend and API glue still works
+- after `release plan`: release scope, identities, and expected artifacts match intent
+- after `release deploy`: `stellarforge.lock.json` changed only in the ways you expected
+- after `release verify`: deploy artifacts line up with the live environment
+
 ## Release Scope
 
 `stellar-forge` determines release scope like this:
@@ -195,6 +277,60 @@ Also useful:
 ```bash
 stellar forge doctor network <env>
 stellar forge project info
+```
+
+## Using `status`, `drift`, `diff`, `history`, And `inspect` Together
+
+The release-inspection commands are easiest to understand as a layered toolkit:
+
+| Command | Best question it answers |
+| --- | --- |
+| `release status <env>` | what does the current snapshot look like, and is there archived history? |
+| `release drift <env>` | how far is the current workspace from the expected release state? |
+| `release diff <env>` | how does the current snapshot compare to a selected archived snapshot? |
+| `release history <env>` | what snapshots are available under `dist/history/`? |
+| `release inspect <env>` | what is inside one snapshot, and how does it compare to the current state? |
+
+Recommended troubleshooting flow:
+
+```bash
+stellar forge release status testnet --out dist/release.status.json
+stellar forge release drift testnet --out dist/release.drift.json
+stellar forge release history testnet --out dist/release.history.json
+stellar forge release inspect testnet --path dist/history/deploy.testnet.20260413T000000.000Z.json --out dist/release.inspect.json
+stellar forge release diff testnet --path dist/history/deploy.testnet.20260413T000000.000Z.json --out dist/release.diff.json
+```
+
+Use that sequence when:
+
+- teammates report different contract ids locally
+- `.env.generated` looks stale
+- the lockfile changed unexpectedly
+- you want to understand whether drift comes from the live network or only from local artifacts
+
+## Rollbacking Local Release Metadata
+
+Every time `dist/deploy.<env>.json` is replaced with new contents, the previous artifact is copied
+into `dist/history/`. You can restore local release metadata from one of those snapshots with:
+
+```bash
+stellar forge release history <env>
+stellar forge release inspect <env>
+stellar forge release rollback <env>
+stellar forge release rollback <env> --to dist/history/deploy.<env>.<timestamp>.json
+```
+
+This updates:
+
+- `stellarforge.lock.json`
+- `.env.generated`
+- `dist/deploy.<env>.json`
+
+It is a local-state rollback, not an on-chain rollback. After restoring, rerun:
+
+```bash
+stellar forge release verify <env>
+stellar forge release aliases sync <env>
 ```
 
 ## Exported Artifacts
@@ -266,6 +402,13 @@ stellar forge --network testnet release registry deploy rewards
 
 Use registry flows when your contract distribution model depends on published Wasm references
 rather than only direct contract deploys.
+
+Registry selection tips:
+
+- use the default auto-detection when you simply want the available backend
+- set `STELLAR_FORGE_REGISTRY_MODE=stellar` when you need parity with the official `stellar` CLI
+- set `STELLAR_FORGE_REGISTRY_MODE=dedicated` when your environment standardizes on the standalone
+  `stellar-registry` binary
 
 ## Suggested Deployment Playbooks
 
@@ -370,3 +513,18 @@ Then review together:
 - `.env.generated`
 - `dist/deploy.<env>.json`
 - `dist/registry.<env>.json` when registry flows were used
+
+## What To Commit After A Release
+
+Treat the release as both an on-chain change and a repository-state change.
+
+Normally you want to review and commit:
+
+- `stellarforge.toml` when release scope or manifest intent changed
+- `stellarforge.lock.json`
+- `.env.generated` if your workflow tracks exported runtime ids in git
+- `dist/deploy.<env>.json`
+- `dist/registry.<env>.json` when registry flows were used
+
+If the release also required regeneration, include the updated generated files in the same review so
+the repo reflects the deploy you actually verified.

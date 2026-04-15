@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::tempdir;
 
@@ -25,11 +25,13 @@ fn init_writes_expected_project_scaffold() {
     let worker = read(root.join("workers/events/ingest-events.mjs"));
     let web_package = read(root.join("apps/web/package.json"));
     let web_smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
+    let web_browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
     assert!(root.join("stellarforge.toml").exists());
     assert!(root.join("stellarforge.lock.json").exists());
     assert!(root.join("apps/api/package.json").exists());
     assert!(root.join("apps/web/src/main.tsx").exists());
     assert!(root.join("apps/web/scripts/ui-smoke.mjs").exists());
+    assert!(root.join("apps/web/scripts/ui-browser-smoke.mjs").exists());
     assert!(root.join("contracts/app/Cargo.toml").exists());
     assert!(root.join("contracts/app/rust-toolchain.toml").exists());
     assert!(root.join("scripts/reseed.mjs").exists());
@@ -38,22 +40,121 @@ fn init_writes_expected_project_scaffold() {
     assert!(root.join("workers/events/ingest-events.mjs").exists());
     assert!(readme.contains("node scripts/doctor.mjs"));
     assert!(readme.contains("node scripts/release.mjs --plan"));
+    assert!(readme.contains("node workers/events/ingest-events.mjs <resource> --status --once"));
+    assert!(readme.contains("stellar forge project smoke"));
+    assert!(readme.contains("stellar forge project smoke --browser"));
+    assert!(readme.contains("pnpm --dir apps/web smoke:browser:build"));
+    assert!(readme.contains("pnpm --dir apps/web smoke:browser:install"));
+    assert!(readme.contains("pnpm --dir apps/web smoke:browser:run"));
+    assert!(readme.contains("STELLAR_FORGE_BROWSER_SMOKE_PORT"));
     assert!(reseed_script.contains("dev', 'reseed"));
     assert!(release_script.contains("release', 'deploy"));
     assert!(release_script.contains("release', 'plan"));
     assert!(doctor_script.contains("['doctor'"));
     assert!(worker.contains("'events'"));
     assert!(worker.contains("'backfill'"));
+    assert!(worker.contains("'status'"));
+    assert!(worker.contains("'export'"));
+    assert!(worker.contains("STELLAR_EVENTS_TOPICS"));
     assert!(web_package.contains("\"smoke:ui\""));
+    assert!(web_package.contains("\"smoke:browser\""));
+    assert!(web_package.contains("\"smoke:browser:build\""));
+    assert!(web_package.contains("\"smoke:browser:install\""));
+    assert!(web_package.contains("\"smoke:browser:run\""));
     assert!(web_package.contains("\"preview\""));
     assert!(web_smoke_runner.contains("vite build"));
     assert!(web_smoke_runner.contains("vite preview"));
     assert!(web_smoke_runner.contains("UI smoke passed"));
+    assert!(web_browser_smoke_runner.contains("@playwright/test@1.59.1"));
+    assert!(web_browser_smoke_runner.contains("Chromium revision"));
+    assert!(web_browser_smoke_runner.contains("already present; skipping install"));
+    assert!(web_browser_smoke_runner.contains("unknown browser smoke mode"));
+    assert!(web_browser_smoke_runner.contains("STELLAR_FORGE_BROWSER_SMOKE_PORT"));
+    assert!(web_browser_smoke_runner.contains("browser smoke passed"));
     if stellar_available() {
         assert!(root.join("Cargo.toml").exists());
         assert!(root.join("contracts/app/Makefile").exists());
         assert!(root.join("contracts/app/src/test.rs").exists());
     }
+}
+
+#[test]
+fn init_install_rejects_unsupported_package_manager() {
+    let temp = tempdir().expect("tempdir should be created");
+    let bin = std::env::var_os("CARGO_BIN_EXE_stellar-forge")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("stellar-forge"));
+
+    let output = Command::new(bin)
+        .current_dir(temp.path())
+        .args([
+            "--json",
+            "init",
+            "demo",
+            "--template",
+            "fullstack",
+            "--install",
+            "--package-manager",
+            "evil-pm",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "init");
+    assert_eq!(json["status"], "error");
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("unsupported `project.package_manager` value `evil-pm`")
+    );
+}
+
+#[test]
+fn init_with_install_and_git_runs_package_manager_and_git_init() {
+    let temp = tempdir().expect("tempdir should be created");
+    let log_path = temp.path().join("init-tools.log");
+    let fake_bin = install_recording_fake_commands(temp.path(), &["pnpm", "git"]);
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_LOG_PATH", &log_path)
+        .args([
+            "--json",
+            "init",
+            "demo",
+            "--template",
+            "fullstack",
+            "--install",
+            "--git",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "init");
+
+    let invocations = read_invocation_log(&log_path);
+    assert!(
+        invocations
+            .iter()
+            .any(|line| line.starts_with("git|") && line.ends_with("|init"))
+    );
+    assert!(
+        invocations
+            .iter()
+            .any(|line| line.starts_with("pnpm|") && line.contains("/apps/api|install"))
+    );
+    assert!(
+        invocations
+            .iter()
+            .any(|line| line.starts_with("pnpm|") && line.contains("/apps/web|install"))
+    );
 }
 
 #[test]
@@ -71,6 +172,7 @@ fn rewards_template_writes_domain_specific_contract_files() {
     let web_main = read(root.join("apps/web/src/main.tsx"));
     let web_state = read(root.join("apps/web/src/generated/stellar.ts"));
     let web_smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
+    let web_browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
 
     assert!(manifest.contains("[contracts.rewards.init]"));
     assert!(manifest.contains("token = \"@token:points:sac\""));
@@ -102,6 +204,8 @@ fn rewards_template_writes_domain_specific_contract_files() {
     assert!(web_main.contains("stellar forge release deploy"));
     assert!(web_smoke_runner.contains("expectedMarkers"));
     assert!(web_smoke_runner.contains("project name"));
+    assert!(web_browser_smoke_runner.contains("pageerror"));
+    assert!(web_browser_smoke_runner.contains("generated frontend renders expected sections"));
     assert!(web_state.contains("\"environment\": \"testnet\""));
     assert!(web_state.contains("\"network\": {"));
     assert!(web_state.contains("\"api\": {"));
@@ -114,11 +218,19 @@ fn rewards_template_writes_domain_specific_contract_files() {
 #[test]
 fn project_adopt_scaffold_imports_contracts_packages_and_environments() {
     let root = init_scaffold_like_project();
+    let out_path = root.join("dist/project.adopt.json");
 
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
-        .args(["--json", "project", "adopt", "scaffold"])
+        .args([
+            "--json",
+            "project",
+            "adopt",
+            "scaffold",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
         .output()
         .expect("command should run");
 
@@ -146,6 +258,10 @@ fn project_adopt_scaffold_imports_contracts_packages_and_environments() {
     assert_eq!(environments, vec!["local", "testnet"]);
     assert_eq!(json["data"]["deployments"]["local"], 1);
     assert_eq!(json["data"]["deployments"]["testnet"], 1);
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
     assert!(
         json["warnings"]
             .as_array()
@@ -207,6 +323,9 @@ fn project_adopt_scaffold_imports_contracts_packages_and_environments() {
         lockfile["environments"]["local"]["contracts"]["hello"]["contract_id"],
         "CLOCAL123"
     );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("project adopt out should parse");
+    assert_eq!(out_json["action"], "project.adopt.scaffold");
 }
 
 #[test]
@@ -260,6 +379,64 @@ fn project_info_reports_scaffold_compatibility_and_deployments() {
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
     assert_eq!(compatibility_envs, vec!["local", "testnet"]);
+}
+
+#[test]
+fn project_info_and_validate_write_reports_to_out_paths() {
+    let root = init_rewards_project();
+    let info_out = root.join("dist/project.info.json");
+    let validate_out = root.join("dist/project.validate.json");
+
+    let info = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "project",
+            "info",
+            "--out",
+            info_out.to_str().expect("info out should be valid UTF-8"),
+        ])
+        .output()
+        .expect("project info should run");
+    assert!(info.status.success());
+    let info_json: Value =
+        serde_json::from_slice(&info.stdout).expect("info stdout should be valid json");
+    assert_eq!(info_json["action"], "project.info");
+    assert_eq!(
+        info_json["data"]["out"],
+        info_out.to_str().expect("info out should be valid UTF-8")
+    );
+    let info_file: Value = serde_json::from_str(&read(&info_out)).expect("info out should parse");
+    assert_eq!(info_file["action"], "project.info");
+
+    let validate = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "project",
+            "validate",
+            "--out",
+            validate_out
+                .to_str()
+                .expect("validate out should be valid UTF-8"),
+        ])
+        .output()
+        .expect("project validate should run");
+    assert!(validate.status.success());
+    let validate_json: Value =
+        serde_json::from_slice(&validate.stdout).expect("validate stdout should be valid json");
+    assert_eq!(validate_json["action"], "project.validate");
+    assert_eq!(
+        validate_json["data"]["out"],
+        validate_out
+            .to_str()
+            .expect("validate out should be valid UTF-8")
+    );
+    let validate_file: Value =
+        serde_json::from_str(&read(&validate_out)).expect("validate out should parse");
+    assert_eq!(validate_file["action"], "project.validate");
 }
 
 #[test]
@@ -601,15 +778,310 @@ fn project_add_frontend_generates_scaffold_and_reports_paths() {
     let web_main = read(root.join("apps/web/src/main.tsx"));
     let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
     let smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
+    let browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
 
     assert!(manifest.contains("[frontend]"));
     assert!(manifest.contains("framework = \"react-vite\""));
     assert!(root.join("apps/web/index.html").exists());
     assert!(root.join("apps/web/scripts/ui-smoke.mjs").exists());
+    assert!(root.join("apps/web/scripts/ui-browser-smoke.mjs").exists());
     assert!(web_package.contains("\"smoke:ui\""));
+    assert!(web_package.contains("\"smoke:browser\""));
+    assert!(web_package.contains("\"smoke:browser:build\""));
+    assert!(web_package.contains("\"smoke:browser:install\""));
+    assert!(web_package.contains("\"smoke:browser:run\""));
     assert!(web_main.contains("stellarState.project.name"));
     assert!(generated_state.contains("stellarState"));
     assert!(smoke_runner.contains("stellar forge release "));
+    assert!(browser_smoke_runner.contains("@playwright/test@1.59.1"));
+    assert!(browser_smoke_runner.contains("already present; skipping install"));
+    assert!(browser_smoke_runner.contains("STELLAR_FORGE_BROWSER_SMOKE_PORT"));
+}
+
+#[test]
+fn project_add_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let api_root = init_minimal_contract_project();
+    let api_out = api_root.join("dist/project.add.api.json");
+    let api_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&api_root)
+        .args([
+            "--json",
+            "project",
+            "add",
+            "api",
+            "--out",
+            api_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(api_output.status.success());
+    assert_report(&api_output.stdout, "project.add.api", &api_out);
+
+    let frontend_root = init_minimal_contract_project();
+    let frontend_out = frontend_root.join("dist/project.add.frontend.json");
+    let frontend_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&frontend_root)
+        .args([
+            "--json",
+            "project",
+            "add",
+            "frontend",
+            "--framework",
+            "react-vite",
+            "--out",
+            frontend_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(frontend_output.status.success());
+    assert_report(
+        &frontend_output.stdout,
+        "project.add.frontend",
+        &frontend_out,
+    );
+
+    let contract_root = init_rewards_project();
+    let contract_out = contract_root.join("dist/project.add.contract.json");
+    let contract_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&contract_root)
+        .env("PATH", "")
+        .args([
+            "--json",
+            "project",
+            "add",
+            "contract",
+            "escrow",
+            "--template",
+            "escrow",
+            "--out",
+            contract_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(contract_output.status.success());
+    assert_report(
+        &contract_output.stdout,
+        "project.add.contract",
+        &contract_out,
+    );
+}
+
+#[test]
+fn project_smoke_dry_run_reports_frontend_smoke_command() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "project", "smoke"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["data"]["package_manager"], "pnpm");
+    assert_eq!(json["data"]["install"], false);
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("pnpm --dir apps/web 'smoke:ui'"))
+    );
+    assert!(
+        json["next"]
+            .as_array()
+            .expect("next should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("pnpm --dir apps/web dev"))
+    );
+}
+
+#[test]
+fn project_smoke_browser_dry_run_reports_frontend_browser_smoke_command() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "project", "smoke", "--browser"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["data"]["browser"], true);
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("pnpm --dir apps/web 'smoke:browser'"))
+    );
+    assert!(
+        json["data"]["runner"]
+            .as_str()
+            .expect("runner should be present")
+            .ends_with("apps/web/scripts/ui-browser-smoke.mjs")
+    );
+}
+
+#[test]
+fn project_smoke_dry_run_can_include_install_step() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "project", "smoke", "--install"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["data"]["install"], true);
+    let commands = json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(commands.contains(&"pnpm --dir apps/web install"));
+    assert!(commands.contains(&"pnpm --dir apps/web 'smoke:ui'"));
+}
+
+#[test]
+fn project_smoke_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/project.smoke.json");
+    let fake_bin = install_fake_pnpm(&root);
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                std::env::var("PATH").expect("PATH should exist")
+            ),
+        )
+        .args([
+            "--json",
+            "project",
+            "smoke",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let stdout_json: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(stdout_json["action"], "project.smoke");
+    assert_eq!(
+        stdout_json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+
+    let file_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("out file should contain valid json");
+    assert_eq!(file_json["action"], "project.smoke");
+    assert_eq!(
+        file_json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+}
+
+#[test]
+fn project_smoke_runs_install_and_browser_runner() {
+    let root = init_rewards_project();
+    let log_path = root.join("project-smoke.log");
+    let fake_bin = install_recording_fake_commands(&root, &["pnpm"]);
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_LOG_PATH", &log_path)
+        .args(["--json", "project", "smoke", "--install", "--browser"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["data"]["install"], true);
+    assert_eq!(json["data"]["browser"], true);
+
+    let invocations = read_invocation_log(&log_path);
+    assert!(
+        invocations
+            .iter()
+            .any(|line| line.starts_with("pnpm|") && line.ends_with("|--dir apps/web install"))
+    );
+    assert!(invocations.iter().any(|line| {
+        line.starts_with("pnpm|") && line.ends_with("|--dir apps/web smoke:browser")
+    }));
+}
+
+#[test]
+fn project_smoke_rejects_projects_without_frontend_scaffold() {
+    let root = init_minimal_contract_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "project", "smoke"])
+        .output()
+        .expect("command should run");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(7));
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["data"]["error_code"], "manifest");
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("frontend scaffold is not enabled in the manifest")
+    );
 }
 
 #[test]
@@ -702,6 +1174,90 @@ fn api_generate_token_writes_service_module_and_builder_hints() {
 }
 
 #[test]
+fn api_init_and_generate_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let init_root = init_minimal_contract_project();
+    let init_out = init_root.join("dist/api.init.json");
+    let init_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&init_root)
+        .args([
+            "--json",
+            "api",
+            "init",
+            "--out",
+            init_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(init_output.status.success());
+    assert_report(&init_output.stdout, "api.init", &init_out);
+
+    let contract_root = init_minimal_contract_project();
+    let contract_out = contract_root.join("dist/api.generate.contract.json");
+    let contract_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&contract_root)
+        .args([
+            "--json",
+            "api",
+            "generate",
+            "contract",
+            "app",
+            "--out",
+            contract_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(contract_output.status.success());
+    assert_report(
+        &contract_output.stdout,
+        "api.generate.contract",
+        &contract_out,
+    );
+
+    let token_root = init_rewards_project();
+    let token_out = token_root.join("dist/api.generate.token.json");
+    let token_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&token_root)
+        .args([
+            "--json",
+            "api",
+            "generate",
+            "token",
+            "points",
+            "--out",
+            token_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(token_output.status.success());
+    assert_report(&token_output.stdout, "api.generate.token", &token_out);
+}
+
+#[test]
 fn project_add_contract_refreshes_api_and_frontend_derivatives() {
     let root = init_rewards_project();
 
@@ -768,6 +1324,7 @@ fn project_add_contract_refreshes_api_and_frontend_derivatives() {
 #[test]
 fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     let root = init_rewards_project();
+    let out_path = root.join("dist/project.sync.json");
     fs::write(root.join(".env.example"), "BROKEN=1\n").expect("env example should be overwritten");
     fs::write(
         root.join("apps/api/src/services/contracts/rewards.ts"),
@@ -779,11 +1336,22 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
         .expect("frontend state should be overwritten");
     fs::write(root.join("apps/web/scripts/ui-smoke.mjs"), "BROKEN\n")
         .expect("frontend smoke runner should be overwritten");
+    fs::write(
+        root.join("apps/web/scripts/ui-browser-smoke.mjs"),
+        "BROKEN\n",
+    )
+    .expect("frontend browser smoke runner should be overwritten");
 
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
-        .args(["--json", "project", "sync"])
+        .args([
+            "--json",
+            "project",
+            "sync",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
         .output()
         .expect("command should run");
 
@@ -799,6 +1367,10 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     assert!(synced_modules.contains(&"env_example"));
     assert!(synced_modules.contains(&"api"));
     assert!(synced_modules.contains(&"frontend"));
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
     assert!(
         json["next"]
             .as_array()
@@ -806,18 +1378,23 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
             .iter()
             .any(|value| value.as_str() == Some("stellar forge project validate"))
     );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("project sync out should parse");
+    assert_eq!(out_json["action"], "project.sync");
 
     let env_example = read(root.join(".env.example"));
     let contract_service = read(root.join("apps/api/src/services/contracts/rewards.ts"));
     let openapi = read(root.join("apps/api/openapi.json"));
     let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
     let smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
+    let browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
 
     assert!(env_example.contains("STELLAR_NETWORK=testnet"));
     assert!(contract_service.contains("/contracts/rewards/call/:fn"));
     assert!(openapi.contains("/contracts/rewards/call/{fn}"));
     assert!(generated_state.contains("stellarState"));
     assert!(smoke_runner.contains("UI smoke passed"));
+    assert!(browser_smoke_runner.contains("browser smoke passed"));
 }
 
 #[test]
@@ -852,6 +1429,87 @@ fn api_openapi_export_rewrites_document_and_reports_path_count() {
     let openapi = read(root.join("apps/api/openapi.json"));
     assert!(openapi.contains("/contracts/rewards/call/{fn}"));
     assert!(openapi.contains("/tokens/points/payment"));
+}
+
+#[test]
+fn api_openapi_events_and_relayer_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let openapi_root = init_rewards_project();
+    let openapi_out = openapi_root.join("dist/api.openapi.json");
+    let openapi_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&openapi_root)
+        .args([
+            "--json",
+            "api",
+            "openapi",
+            "export",
+            "--out",
+            openapi_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(openapi_output.status.success());
+    assert_report(&openapi_output.stdout, "api.openapi.export", &openapi_out);
+
+    let events_root = init_rewards_project();
+    let events_out = events_root.join("dist/api.events.init.json");
+    let events_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&events_root)
+        .args([
+            "--json",
+            "api",
+            "events",
+            "init",
+            "--out",
+            events_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(events_output.status.success());
+    assert_report(&events_output.stdout, "api.events.init", &events_out);
+
+    let relayer_root = init_rewards_project();
+    let relayer_out = relayer_root.join("dist/api.relayer.init.json");
+    let relayer_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&relayer_root)
+        .args([
+            "--json",
+            "api",
+            "relayer",
+            "init",
+            "--out",
+            relayer_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(relayer_output.status.success());
+    assert_report(&relayer_output.stdout, "api.relayer.init", &relayer_out);
 }
 
 #[test]
@@ -941,6 +1599,7 @@ id = "CLOCAL123"
 #[test]
 fn dev_watch_once_dry_run_refreshes_build_and_bindings() {
     let root = init_rewards_project();
+    let out_path = root.join("dist/dev.watch.json");
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
@@ -953,6 +1612,8 @@ fn dev_watch_once_dry_run_refreshes_build_and_bindings() {
             "dev",
             "watch",
             "--once",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
         ])
         .output()
         .expect("command should run");
@@ -960,9 +1621,16 @@ fn dev_watch_once_dry_run_refreshes_build_and_bindings() {
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
     assert_eq!(json["action"], "dev.watch");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
     assert_eq!(json["data"]["mode"], "once");
     assert_eq!(json["data"]["contracts"][0]["name"], "rewards");
     assert_eq!(json["data"]["contracts"][0]["binding_status"], "generated");
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("dev watch out should parse");
+    assert_eq!(out_json["action"], "dev.watch");
 
     let commands = json["commands"]
         .as_array()
@@ -1006,6 +1674,137 @@ fn dev_watch_once_dry_run_refreshes_build_and_bindings() {
             .iter()
             .any(|artifact| artifact.ends_with("apps/web/src/generated/stellar.ts"))
     );
+}
+
+#[test]
+fn dev_basic_command_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        json
+    };
+
+    let root = init_rewards_project();
+
+    let up_out = root.join("dist/dev.up.json");
+    let up_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "dev",
+            "up",
+            "--out",
+            up_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(up_output.status.success());
+    let up_json = assert_report(&up_output.stdout, "dev.up", &up_out);
+    assert_eq!(up_json["network"], "local");
+
+    let down_out = root.join("dist/dev.down.json");
+    let down_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "dev",
+            "down",
+            "--out",
+            down_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(down_output.status.success());
+    let down_json = assert_report(&down_output.stdout, "dev.down", &down_out);
+    assert_eq!(down_json["network"], "local");
+
+    let reset_out = root.join("dist/dev.reset.json");
+    let reset_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "dev",
+            "reset",
+            "--out",
+            reset_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(reset_output.status.success());
+    let reset_json = assert_report(&reset_output.stdout, "dev.reset", &reset_out);
+    assert_eq!(reset_json["network"], "local");
+
+    let fund_out = root.join("dist/dev.fund.json");
+    let fund_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "dev",
+            "fund",
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            "--out",
+            fund_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(fund_output.status.success());
+    let fund_json = assert_report(&fund_output.stdout, "dev.fund", &fund_out);
+    assert_eq!(
+        fund_json["data"]["address"],
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    );
+
+    let events_out = root.join("dist/dev.events.json");
+    let events_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "dev",
+            "events",
+            "rewards",
+            "--out",
+            events_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(events_output.status.success());
+    let events_json = assert_report(&events_output.stdout, "dev.events", &events_out);
+    assert_eq!(events_json["data"]["resource"], "rewards");
+
+    let logs_out = root.join("dist/dev.logs.json");
+    let logs_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "dev",
+            "logs",
+            "--out",
+            logs_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+    assert!(logs_output.status.success());
+    assert_report(&logs_output.stdout, "dev.logs", &logs_out);
 }
 
 #[test]
@@ -1079,6 +1878,44 @@ fn api_events_init_enables_api_and_generates_event_scaffold() {
     assert!(env_example.contains("STELLAR_EVENTS_TYPE=all"));
     assert!(schema.contains("last_ledger integer"));
     assert!(schema.contains("external_id text not null unique"));
+}
+
+#[test]
+fn events_ingest_init_writes_report_to_out_path() {
+    let temp = tempdir().expect("tempdir should be created");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .args(["init", "demo", "--template", "minimal-contract"])
+        .assert()
+        .success();
+
+    let root = temp.path().join("demo");
+    let out_path = root.join("dist/events.ingest.init.json");
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "events",
+            "ingest",
+            "init",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.ingest.init");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("events ingest init out should parse");
+    assert_eq!(out_json["action"], "events.ingest.init");
 }
 
 #[test]
@@ -1165,6 +2002,111 @@ fn api_relayer_init_scaffolds_proxy_and_wallet_pay_relayer_dry_run_targets_it() 
 }
 
 #[test]
+fn wallet_batch_pay_dry_run_reads_json_entries() {
+    let root = init_rewards_project();
+    fs::write(
+        root.join("payments.json"),
+        r#"[
+  { "to": "bob", "amount": "10" },
+  { "to": "alice", "amount": "5" }
+]
+"#,
+    )
+    .expect("batch payment file should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "batch-pay",
+            "--from",
+            "alice",
+            "--asset",
+            "XLM",
+            "--file",
+            "payments.json",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.batch-pay");
+    assert_eq!(json["data"]["count"], 2);
+    assert_eq!(json["data"]["format"], "json");
+    let payments = json["data"]["payments"]
+        .as_array()
+        .expect("payments should be an array");
+    assert_eq!(payments[0]["to"], "bob");
+    assert_eq!(payments[1]["amount"], "5");
+    let commands = json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.contains("stellar tx new payment"))
+            .count(),
+        2
+    );
+    assert!(commands.iter().any(|command| command.contains("bob")));
+    assert!(commands.iter().any(|command| command.contains("alice")));
+}
+
+#[test]
+fn token_airdrop_dry_run_reads_csv_entries() {
+    let root = init_rewards_project();
+    fs::write(root.join("airdrop.csv"), "to,amount\nalice,10\nbob,20\n")
+        .expect("airdrop csv should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "airdrop",
+            "points",
+            "--from",
+            "treasury",
+            "--file",
+            "airdrop.csv",
+            "--format",
+            "csv",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "token.airdrop");
+    assert_eq!(json["data"]["token"], "points");
+    assert_eq!(json["data"]["count"], 2);
+    assert_eq!(json["data"]["format"], "csv");
+    let commands = json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.contains("stellar tx new payment"))
+            .count(),
+        2
+    );
+    assert!(commands.iter().any(|command| command.contains("POINTS:")));
+}
+
+#[test]
 fn events_cursor_commands_prefer_sqlite_store_when_available() {
     if !sqlite_available() {
         return;
@@ -1239,6 +2181,216 @@ fn events_cursor_commands_prefer_sqlite_store_when_available() {
             .get("testnet:contract:app")
             .is_none()
     );
+}
+
+#[test]
+fn events_cursor_ls_writes_report_to_out_path() {
+    if !sqlite_available() {
+        return;
+    }
+
+    let temp = tempdir().expect("tempdir should be created");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .args(["init", "demo", "--template", "minimal-contract"])
+        .assert()
+        .success();
+
+    let root = temp.path().join("demo");
+    let out_path = root.join("dist/events.cursor.json");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["api", "events", "init"])
+        .assert()
+        .success();
+    seed_sqlite_cursor(
+        &root,
+        "testnet:contract:app",
+        "contract",
+        "app",
+        Some("ledger:321"),
+        Some(321),
+    );
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "events",
+            "cursor",
+            "ls",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.cursor.ls");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("events cursor out should parse");
+    assert_eq!(out_json["action"], "events.cursor.ls");
+}
+
+#[test]
+fn events_cursor_reset_writes_report_to_out_path() {
+    if !sqlite_available() {
+        return;
+    }
+
+    let temp = tempdir().expect("tempdir should be created");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .args(["init", "demo", "--template", "minimal-contract"])
+        .assert()
+        .success();
+
+    let root = temp.path().join("demo");
+    let out_path = root.join("dist/events.cursor.reset.json");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["api", "events", "init"])
+        .assert()
+        .success();
+    seed_sqlite_cursor(
+        &root,
+        "testnet:contract:app",
+        "contract",
+        "app",
+        Some("ledger:321"),
+        Some(321),
+    );
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "events",
+            "cursor",
+            "reset",
+            "testnet:contract:app",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.cursor.reset");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("events cursor reset out should parse");
+    assert_eq!(out_json["action"], "events.cursor.reset");
+}
+
+#[test]
+fn events_status_reports_local_event_store_summary() {
+    if !sqlite_available() {
+        return;
+    }
+
+    let temp = tempdir().expect("tempdir should be created");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .args(["init", "demo", "--template", "minimal-contract"])
+        .assert()
+        .success();
+
+    let root = temp.path().join("demo");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["api", "events", "init"])
+        .assert()
+        .success();
+
+    seed_sqlite_cursor(
+        &root,
+        "testnet:contract:app",
+        "contract",
+        "app",
+        Some("ledger:321"),
+        Some(321),
+    );
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "events", "status"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.status");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["data"]["total_events"], 0);
+    assert_eq!(json["data"]["cursor_count"], 1);
+    assert_eq!(json["data"]["latest_ledger"], Value::Null);
+}
+
+#[test]
+fn events_status_writes_report_to_out_path() {
+    if !sqlite_available() {
+        return;
+    }
+
+    let temp = tempdir().expect("tempdir should be created");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(temp.path())
+        .args(["init", "demo", "--template", "minimal-contract"])
+        .assert()
+        .success();
+
+    let root = temp.path().join("demo");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["api", "events", "init"])
+        .assert()
+        .success();
+
+    let out_path = root.join("dist/events.status.json");
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "events",
+            "status",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let stdout_json: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(stdout_json["action"], "events.status");
+    assert_eq!(
+        stdout_json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let file_json: Value = serde_json::from_str(&read(&out_path)).expect("out file should parse");
+    assert_eq!(file_json["action"], "events.status");
 }
 
 #[test]
@@ -1522,6 +2674,42 @@ fn events_watch_rejects_non_terminal_deep_wildcard_topic() {
 }
 
 #[test]
+fn events_watch_rejects_cursor_and_start_ledger_together() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "events",
+            "watch",
+            "contract",
+            "rewards",
+            "--cursor",
+            "ledger:55",
+            "--start-ledger",
+            "12345",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.watch");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["data"]["error_code"], "input");
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("use either `--cursor` or `--start-ledger`, not both")
+    );
+}
+
+#[test]
 fn wallet_pay_dry_run_uses_payment_for_classic_accounts() {
     let root = init_rewards_project();
     let output = Command::cargo_bin("stellar-forge")
@@ -1587,6 +2775,38 @@ fn contract_spec_dry_run_reports_alias_bindings_and_paths() {
 }
 
 #[test]
+fn contract_spec_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/contract.spec.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "contract",
+            "spec",
+            "rewards",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.spec");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("contract spec out should parse");
+    assert_eq!(out_json["action"], "contract.spec");
+}
+
+#[test]
 fn contract_info_dry_run_uses_stellar_contract_info_subcommands() {
     let root = init_contract_token_project();
 
@@ -1645,6 +2865,111 @@ fn contract_info_dry_run_uses_stellar_contract_info_subcommands() {
 }
 
 #[test]
+fn contract_info_dry_run_writes_report_to_out_path() {
+    let root = init_contract_token_project();
+    let out_path = root.join("dist/contract.info.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "info",
+            "credits",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.info");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("contract info out should parse");
+    assert_eq!(out_json["action"], "contract.info");
+}
+
+#[test]
+fn contract_format_dry_run_reports_cargo_fmt_command() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "contract",
+            "format",
+            "rewards",
+            "--check",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.format");
+    assert_eq!(json["data"]["mode"], "check");
+    assert_eq!(json["data"]["contracts"][0]["name"], "rewards");
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|command| command.contains("cargo fmt --all --check"))
+    );
+    assert!(
+        json["next"]
+            .as_array()
+            .expect("next should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("stellar forge contract format"))
+    );
+}
+
+#[test]
+fn token_info_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/token.info.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "token",
+            "info",
+            "points",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "token.info");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("token info out should parse");
+    assert_eq!(out_json["action"], "token.info");
+}
+
+#[test]
 fn contract_fetch_dry_run_resolves_contract_id_and_default_artifact_path() {
     let root = init_rewards_project();
     seed_testnet_release_lockfile(&root);
@@ -1687,6 +3012,242 @@ fn contract_fetch_dry_run_resolves_contract_id_and_default_artifact_path() {
                 && command.contains("rewards.testnet.wasm")
                 && command.contains("--network testnet"))
     );
+}
+
+#[test]
+fn contract_fetch_dry_run_respects_custom_output_path() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+    let out_path = root.join("tmp/custom/rewards.wasm");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "fetch",
+            "rewards",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.fetch");
+    assert_eq!(
+        json["data"]["output"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    assert!(json["data"].get("out").is_none());
+    assert!(
+        json["artifacts"]
+            .as_array()
+            .expect("artifacts should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|artifact| artifact == out_path.to_str().expect("out path should be valid UTF-8"))
+    );
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|command| command.contains("stellar contract fetch")
+                && command.contains("--out-file")
+                && command.contains("tmp/custom/rewards.wasm"))
+    );
+}
+
+#[test]
+fn contract_command_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let format_root = init_rewards_project();
+    let format_out = format_root.join("dist/contract.format.json");
+    let format_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&format_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "contract",
+            "format",
+            "rewards",
+            "--check",
+            "--out",
+            format_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(format_output.status.success());
+    assert_report(&format_output.stdout, "contract.format", &format_out);
+
+    let build_root = init_rewards_project();
+    let build_out = build_root.join("dist/contract.build.json");
+    let build_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&build_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "contract",
+            "build",
+            "rewards",
+            "--out",
+            build_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(build_output.status.success());
+    assert_report(&build_output.stdout, "contract.build", &build_out);
+
+    let deploy_root = init_rewards_project();
+    let deploy_out = deploy_root.join("dist/contract.deploy.json");
+    let deploy_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&deploy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "deploy",
+            "rewards",
+            "--out",
+            deploy_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(deploy_output.status.success());
+    assert_report(&deploy_output.stdout, "contract.deploy", &deploy_out);
+
+    let call_root = init_rewards_project();
+    seed_testnet_release_lockfile(&call_root);
+    let call_out = call_root.join("dist/contract.call.json");
+    let call_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&call_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "call",
+            "rewards",
+            "increment",
+            "--build-only",
+            "--out",
+            call_out.to_str().expect("out path should be valid UTF-8"),
+            "--",
+            "--amount",
+            "5",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(call_output.status.success());
+    assert_report(&call_output.stdout, "contract.call", &call_out);
+
+    let bind_root = init_rewards_project();
+    seed_testnet_release_lockfile(&bind_root);
+    let bind_out = bind_root.join("dist/contract.bind.json");
+    let bind_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&bind_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "bind",
+            "rewards",
+            "--lang",
+            "typescript",
+            "--out",
+            bind_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(bind_output.status.success());
+    assert_report(&bind_output.stdout, "contract.bind", &bind_out);
+}
+
+#[test]
+fn contract_lint_runs_cargo_clippy_and_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let log_path = root.join("contract-lint.log");
+    let fake_bin = install_recording_fake_commands(&root, &["cargo"]);
+    let out_path = root.join("dist/contract.lint.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("HOME", &root)
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_LOG_PATH", &log_path)
+        .args([
+            "--json",
+            "contract",
+            "lint",
+            "rewards",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.lint");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    assert_eq!(json["data"]["contracts"][0]["name"], "rewards");
+    assert_eq!(
+        json["data"]["profile"],
+        "clippy --all-targets --all-features -- -D warnings"
+    );
+
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("contract lint out should parse");
+    assert_eq!(out_json["action"], "contract.lint");
+
+    let invocations = read_invocation_log(&log_path);
+    assert!(invocations.iter().any(|line| {
+        line.starts_with("cargo|")
+            && line.contains("/contracts/rewards|")
+            && line.ends_with("clippy --all-targets --all-features -- -D warnings")
+    }));
 }
 
 #[test]
@@ -1788,6 +3349,76 @@ fn contract_ttl_restore_dry_run_maps_spec_command_to_stellar_restore() {
 }
 
 #[test]
+fn contract_ttl_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let extend_root = init_rewards_project();
+    seed_testnet_release_lockfile(&extend_root);
+    let extend_out = extend_root.join("dist/contract.ttl.extend.json");
+    let extend_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&extend_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "ttl",
+            "extend",
+            "rewards",
+            "--out",
+            extend_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(extend_output.status.success());
+    assert_report(&extend_output.stdout, "contract.ttl.extend", &extend_out);
+
+    let restore_root = init_rewards_project();
+    seed_testnet_release_lockfile(&restore_root);
+    let restore_out = restore_root.join("dist/contract.ttl.restore.json");
+    let restore_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&restore_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "contract",
+            "ttl",
+            "restore",
+            "rewards",
+            "--out",
+            restore_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(restore_output.status.success());
+    assert_report(&restore_output.stdout, "contract.ttl.restore", &restore_out);
+}
+
+#[test]
 fn wallet_receive_dry_run_resolves_token_asset_for_sep7_and_qr() {
     let root = init_rewards_project();
     let output = Command::cargo_bin("stellar-forge")
@@ -1817,6 +3448,42 @@ fn wallet_receive_dry_run_resolves_token_asset_for_sep7_and_qr() {
     assert!(sep7.contains("asset_code=POINTS"));
     assert!(sep7.contains("asset_issuer=%3Cissuer%3E"));
     assert_eq!(json["data"]["qr_payload"], json["data"]["sep7_uri"]);
+}
+
+#[test]
+fn wallet_receive_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/wallet.receive.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "receive",
+            "alice",
+            "--asset",
+            "points",
+            "--sep7",
+            "--qr",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.receive");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("wallet receive out should parse");
+    assert_eq!(out_json["action"], "wallet.receive");
 }
 
 #[test]
@@ -1937,6 +3604,37 @@ fn wallet_ls_dry_run_reports_declared_wallet_inventory() {
 }
 
 #[test]
+fn wallet_ls_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/wallet.ls.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "ls",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.ls");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("wallet ls out should parse");
+    assert_eq!(out_json["action"], "wallet.ls");
+}
+
+#[test]
 fn wallet_address_dry_run_resolves_identity_placeholder() {
     let root = init_rewards_project();
 
@@ -1954,6 +3652,38 @@ fn wallet_address_dry_run_resolves_identity_placeholder() {
     assert_eq!(json["data"]["identity"], "treasury");
     assert_eq!(json["data"]["address"], "<treasury>");
     assert_eq!(json["data"]["wallet_kind"], "classic");
+}
+
+#[test]
+fn wallet_address_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/wallet.address.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "address",
+            "treasury",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.address");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("wallet address out should parse");
+    assert_eq!(out_json["action"], "wallet.address");
 }
 
 #[test]
@@ -2105,13 +3835,63 @@ fn wallet_smart_scaffold_generates_onboarding_app_and_policy_contract() {
     assert!(manifest.contains("[contracts.guardian-policy]"));
     assert!(manifest.contains("template = \"passkey-wallet-policy\""));
     assert!(readme.contains("guardian-policy"));
+    assert!(readme.contains("copy-ready checklist"));
     assert!(env.contains("SMART_WALLET_MODE=passkey"));
+    assert!(env.contains("SMART_WALLET_NETWORK=testnet"));
     assert!(env.contains("SMART_WALLET_POLICY_CONTRACT=guardian-policy"));
+    assert!(env.contains("SMART_WALLET_RPC_URL=https://soroban-testnet.stellar.org"));
     assert!(package_json.contains("\"vite\""));
     assert!(main_ts.contains("guardian-policy"));
+    assert!(main_ts.contains("Copy env block"));
+    assert!(main_ts.contains("wallet smart provision guardian --address <contract-id>"));
+    assert!(main_ts.contains("contract deploy guardian-policy --env testnet"));
+    assert!(main_ts.contains("\"network\": \"testnet\""));
+    assert!(main_ts.contains("wallet smart policy diff guardian"));
     assert!(policy_lib.contains("set_daily_limit"));
     assert!(policy_lib.contains("require_admin"));
     assert!(policy_test.contains("policy_template_tracks_admin_limit_and_allow_list"));
+}
+
+#[test]
+fn wallet_smart_scaffold_respects_selected_network_in_generated_files() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--network",
+            "futurenet",
+            "--json",
+            "wallet",
+            "smart",
+            "scaffold",
+            "guardian",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.smart.scaffold");
+
+    let manifest = read(root.join("stellarforge.toml"));
+    let manifest_value: toml::Value =
+        toml::from_str(&manifest).expect("manifest should parse after scaffold");
+    let env = read(root.join("apps/smart-wallet/guardian/.env.example"));
+    let main_ts = read(root.join("apps/smart-wallet/guardian/src/main.ts"));
+
+    let deploy_on = manifest_value["contracts"]["guardian-policy"]["deploy_on"]
+        .as_array()
+        .expect("deploy_on should be an array")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(deploy_on, vec!["local", "testnet", "futurenet"]);
+    assert!(env.contains("SMART_WALLET_NETWORK=futurenet"));
+    assert!(env.contains("SMART_WALLET_RPC_URL=https://rpc-futurenet.stellar.org"));
+    assert!(main_ts.contains("\"network\": \"futurenet\""));
+    assert!(main_ts.contains("contract deploy guardian-policy --env futurenet"));
 }
 
 #[test]
@@ -2152,6 +3932,130 @@ fn wallet_smart_info_reports_manifest_and_generated_paths() {
             .any(|value| {
                 value.as_str()
                     == Some("stellar forge contract deploy guardian-policy --env testnet")
+            })
+    );
+}
+
+#[test]
+fn wallet_smart_info_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/wallet.smart.info.json");
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["wallet", "smart", "scaffold", "guardian"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "wallet",
+            "smart",
+            "info",
+            "guardian",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.smart.info");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("wallet smart info out should parse");
+    assert_eq!(out_json["action"], "wallet.smart.info");
+}
+
+#[test]
+fn wallet_smart_policy_info_reports_source_and_deployment_state() {
+    let root = init_rewards_project();
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["wallet", "smart", "scaffold", "guardian"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "wallet", "smart", "policy", "info", "guardian"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.smart.policy.info");
+    assert_eq!(json["data"]["wallet"]["name"], "guardian");
+    assert_eq!(json["data"]["default_source"], "alice");
+    assert_eq!(json["data"]["policy_contract"]["name"], "guardian-policy");
+    assert_eq!(json["data"]["policy_contract"]["deployed"], false);
+    assert_eq!(json["data"]["policy_contract"]["target"], "guardian-policy");
+}
+
+#[test]
+fn wallet_smart_policy_set_daily_limit_dry_run_uses_controller_identity() {
+    let root = init_rewards_project();
+    let fake_bin = install_fake_stellar(&root);
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                std::env::var("PATH").expect("PATH should exist")
+            ),
+        )
+        .args(["wallet", "smart", "create", "sentinel", "--mode", "ed25519"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "smart",
+            "policy",
+            "set-daily-limit",
+            "sentinel",
+            "1250",
+            "--build-only",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.smart.policy.set-daily-limit");
+    assert_eq!(json["data"]["source"], "sentinel-owner");
+    assert_eq!(json["data"]["daily_limit"], "1250");
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|command| {
+                command.contains("stellar contract invoke")
+                    && command.contains("--id sentinel-policy")
+                    && command.contains("--source-account sentinel-owner")
+                    && command.contains("--send no")
+                    && command.contains("set_daily_limit")
+                    && command.contains("--daily_limit 1250")
             })
     );
 }
@@ -2215,9 +4119,15 @@ fn wallet_smart_create_ed25519_generates_controller_identity_and_scaffold() {
     assert!(manifest.contains("[identities.sentinel-owner]"));
     assert!(manifest.contains("[wallets.sentinel-owner]"));
     assert!(env.contains("SMART_WALLET_MODE=ed25519"));
+    assert!(env.contains("SMART_WALLET_NETWORK=testnet"));
     assert!(env.contains("SMART_WALLET_CONTROLLER_IDENTITY=sentinel-owner"));
+    assert!(env.contains("SMART_WALLET_RPC_URL=https://soroban-testnet.stellar.org"));
     assert!(main_ts.contains("sentinel-owner"));
     assert!(main_ts.contains("controller-signing"));
+    assert!(main_ts.contains("Copy command"));
+    assert!(main_ts.contains("wallet fund sentinel-owner"));
+    assert!(main_ts.contains("\"network\": \"testnet\""));
+    assert!(main_ts.contains("wallet smart policy sync sentinel"));
 }
 
 #[test]
@@ -2260,8 +4170,12 @@ fn wallet_smart_create_passkey_preserves_browser_onboarding_flow() {
     assert!(manifest.contains("[wallets.guardian]"));
     assert!(manifest.contains("mode = \"passkey\""));
     assert!(env.contains("SMART_WALLET_MODE=passkey"));
+    assert!(env.contains("SMART_WALLET_NETWORK=testnet"));
     assert!(!env.contains("SMART_WALLET_CONTROLLER_IDENTITY"));
-    assert!(main_ts.contains("Passkey onboarding scaffold"));
+    assert!(main_ts.contains("Passkey onboarding console"));
+    assert!(main_ts.contains("Copy env block"));
+    assert!(main_ts.contains("wallet smart provision guardian --address <contract-id>"));
+    assert!(main_ts.contains("\"network\": \"testnet\""));
     assert!(main_ts.contains("WebAuthn ceremony"));
 }
 
@@ -2298,6 +4212,29 @@ fn wallet_address_rejects_smart_wallet_even_with_controller_identity() {
 }
 
 #[test]
+fn wallet_address_rejects_unsafe_identity_name() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "wallet", "address", "../oops"])
+        .output()
+        .expect("command should run");
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.address");
+    assert_eq!(json["status"], "error");
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("identity or wallet name `../oops` must be a single filesystem-safe name")
+    );
+}
+
+#[test]
 fn wallet_balances_rejects_smart_wallet_even_with_controller_identity() {
     let root = init_rewards_project();
     let fake_bin = install_fake_stellar(&root);
@@ -2327,6 +4264,40 @@ fn wallet_balances_rejects_smart_wallet_even_with_controller_identity() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr should be valid utf8");
     assert!(stderr.contains("does not resolve to a classic account yet"));
+}
+
+#[test]
+fn wallet_balances_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/wallet.balances.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "wallet",
+            "balances",
+            "alice",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "wallet.balances");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("wallet balances out should parse");
+    assert_eq!(out_json["action"], "wallet.balances");
 }
 
 #[test]
@@ -2527,6 +4498,44 @@ fn events_watch_account_dry_run_uses_horizon_payments() {
                     && command.contains("order=desc")
             })
     );
+}
+
+#[test]
+fn events_watch_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+    let out_path = root.join("dist/events.watch.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "events",
+            "watch",
+            "contract",
+            "rewards",
+            "--count",
+            "5",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "events.watch");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("events watch out should parse");
+    assert_eq!(out_json["action"], "events.watch");
 }
 
 #[test]
@@ -3195,6 +5204,119 @@ fn release_aliases_sync_dry_run_plans_contract_and_sac_aliases() {
 }
 
 #[test]
+fn release_deploy_and_registry_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let deploy_root = init_rewards_project();
+    let deploy_out = deploy_root.join("dist/release.deploy.json");
+    let deploy_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&deploy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "release",
+            "deploy",
+            "testnet",
+            "--out",
+            deploy_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(deploy_output.status.success());
+    assert_report(&deploy_output.stdout, "release.deploy", &deploy_out);
+
+    let publish_root = init_rewards_project();
+    let publish_out = publish_root.join("dist/release.registry.publish.json");
+    let publish_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&publish_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "release",
+            "registry",
+            "publish",
+            "rewards",
+            "--out",
+            publish_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(publish_output.status.success());
+    assert_report(
+        &publish_output.stdout,
+        "release.registry.publish",
+        &publish_out,
+    );
+
+    let registry_root = init_rewards_project();
+    fs::write(
+        registry_root.join("dist/registry.testnet.json"),
+        r#"{
+  "version": 1,
+  "environment": "testnet",
+  "contracts": {
+    "rewards": {
+      "wasm_name": "rewards-registry",
+      "version": "1.2.3"
+    }
+  }
+}"#,
+    )
+    .expect("registry artifact should be written");
+    let registry_out = registry_root.join("dist/release.registry.deploy.json");
+    let registry_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&registry_root)
+        .env("STELLAR_FORGE_REGISTRY_MODE", "dedicated")
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "release",
+            "registry",
+            "deploy",
+            "rewards",
+            "--out",
+            registry_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(registry_output.status.success());
+    assert_report(
+        &registry_output.stdout,
+        "release.registry.deploy",
+        &registry_out,
+    );
+}
+
+#[test]
 fn release_registry_publish_dry_run_plans_build_and_registry_publish() {
     let root = init_rewards_project();
 
@@ -3530,6 +5652,285 @@ fn release_verify_reports_local_drift_in_env_artifact_and_event_config() {
 }
 
 #[test]
+fn release_rollback_restores_lockfile_from_latest_history_artifact() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["release", "env", "export", "testnet"])
+        .assert()
+        .success();
+
+    fs::create_dir_all(root.join("dist/history")).expect("history dir should be created");
+    let historical_artifact = root.join("dist/history/deploy.testnet.20260413T000000.000Z.json");
+    fs::write(
+        &historical_artifact,
+        r#"{
+  "environment": "testnet",
+  "contracts": {
+    "rewards": {
+      "contract_id": "CROLLBACK123",
+      "alias": "rewards",
+      "wasm_hash": "rollbackbeef",
+      "tx_hash": "",
+      "deployed_at": "2026-04-13T00:00:00Z"
+    }
+  },
+  "tokens": {
+    "points": {
+      "kind": "asset",
+      "asset": "POINTS:GROLLBACK123",
+      "issuer_identity": "issuer",
+      "distribution_identity": "treasury",
+      "sac_contract_id": "CSACROLLBACK123",
+      "contract_id": ""
+    }
+  }
+}"#,
+    )
+    .expect("historical artifact should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "release", "rollback", "testnet"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "release.rollback");
+    assert_eq!(json["network"], "testnet");
+    assert!(
+        json["data"]["source_artifact"]
+            .as_str()
+            .expect("source artifact should be present")
+            .ends_with("dist/history/deploy.testnet.20260413T000000.000Z.json")
+    );
+
+    let lockfile: Value = serde_json::from_str(&read(root.join("stellarforge.lock.json")))
+        .expect("lockfile should parse");
+    assert_eq!(
+        lockfile["environments"]["testnet"]["contracts"]["rewards"]["contract_id"],
+        "CROLLBACK123"
+    );
+    assert_eq!(
+        lockfile["environments"]["testnet"]["tokens"]["points"]["asset"],
+        "POINTS:GROLLBACK123"
+    );
+
+    let env_generated = read(root.join(".env.generated"));
+    assert!(env_generated.contains("PUBLIC_REWARDS_CONTRACT_ID=CROLLBACK123"));
+    assert!(env_generated.contains("PUBLIC_POINTS_ASSET=POINTS:GROLLBACK123"));
+
+    let deploy_artifact = read(root.join("dist/deploy.testnet.json"));
+    assert!(deploy_artifact.contains("CROLLBACK123"));
+    assert!(deploy_artifact.contains("CSACROLLBACK123"));
+
+    let archived_current = fs::read_dir(root.join("dist/history"))
+        .expect("history dir should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| read(entry.path()))
+        .any(|contents| contents.contains("CREWARDS123"));
+    assert!(archived_current);
+}
+
+#[test]
+fn release_history_lists_current_and_archived_artifacts() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["release", "env", "export", "testnet"])
+        .assert()
+        .success();
+
+    fs::create_dir_all(root.join("dist/history")).expect("history dir should be created");
+    let historical_artifact = root.join("dist/history/deploy.testnet.20260413T000000.000Z.json");
+    fs::write(
+        &historical_artifact,
+        r#"{
+  "environment": "testnet",
+  "contracts": {
+    "rewards": {
+      "contract_id": "CROLLBACK123",
+      "alias": "rewards",
+      "wasm_hash": "rollbackbeef",
+      "tx_hash": "",
+      "deployed_at": "2026-04-13T00:00:00Z"
+    }
+  },
+  "tokens": {
+    "points": {
+      "kind": "asset",
+      "asset": "POINTS:GROLLBACK123",
+      "issuer_identity": "issuer",
+      "distribution_identity": "treasury",
+      "sac_contract_id": "CSACROLLBACK123",
+      "contract_id": ""
+    }
+  }
+}"#,
+    )
+    .expect("historical artifact should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "release", "history", "testnet"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "release.history");
+    assert_eq!(json["network"], "testnet");
+    assert_eq!(json["data"]["current"]["kind"], "current");
+    assert!(
+        json["data"]["current"]["path"]
+            .as_str()
+            .expect("current path should exist")
+            .ends_with("dist/deploy.testnet.json")
+    );
+    assert_eq!(json["data"]["history"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["data"]["history"][0]["kind"], "history");
+    assert_eq!(json["data"]["history"][0]["contracts"]["count"], 1);
+    assert_eq!(json["data"]["history"][0]["tokens"]["count"], 1);
+}
+
+#[test]
+fn release_inspect_summarizes_selected_artifact() {
+    let root = init_rewards_project();
+    fs::create_dir_all(root.join("dist/history")).expect("history dir should be created");
+    let historical_artifact = root.join("dist/history/deploy.testnet.20260413T000000.000Z.json");
+    fs::write(
+        &historical_artifact,
+        r#"{
+  "environment": "testnet",
+  "contracts": {
+    "rewards": {
+      "contract_id": "CROLLBACK123",
+      "alias": "rewards",
+      "wasm_hash": "rollbackbeef",
+      "tx_hash": "",
+      "deployed_at": "2026-04-13T00:00:00Z"
+    }
+  },
+  "tokens": {
+    "points": {
+      "kind": "asset",
+      "asset": "POINTS:GROLLBACK123",
+      "issuer_identity": "issuer",
+      "distribution_identity": "treasury",
+      "sac_contract_id": "CSACROLLBACK123",
+      "contract_id": ""
+    }
+  }
+}"#,
+    )
+    .expect("historical artifact should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "release",
+            "inspect",
+            "testnet",
+            "--path",
+            "dist/history/deploy.testnet.20260413T000000.000Z.json",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "release.inspect");
+    assert_eq!(json["network"], "testnet");
+    assert!(
+        json["data"]["path"]
+            .as_str()
+            .expect("artifact path should exist")
+            .ends_with("dist/history/deploy.testnet.20260413T000000.000Z.json")
+    );
+    assert_eq!(json["data"]["summary"]["kind"], "history");
+    assert_eq!(json["data"]["summary"]["contracts"]["count"], 1);
+    assert_eq!(json["data"]["summary"]["tokens"]["count"], 1);
+    assert_eq!(json["data"]["comparison"]["status"], "warn");
+    assert!(
+        json["data"]["comparison"]["issues"]
+            .as_array()
+            .expect("comparison issues should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|issue| issue.contains("contract `rewards`"))
+    );
+}
+
+#[test]
+fn release_drift_reports_current_history_and_expected_mismatch() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["release", "env", "export", "testnet"])
+        .assert()
+        .success();
+
+    fs::create_dir_all(root.join("dist/history")).expect("history dir should be created");
+    fs::write(
+        root.join("dist/history/deploy.testnet.20260413T000000.000Z.json"),
+        r#"{
+  "environment": "testnet",
+  "contracts": {
+    "rewards": {
+      "contract_id": "CARCHIVED123",
+      "alias": "rewards",
+      "wasm_hash": "rollbackbeef"
+    }
+  },
+  "tokens": {
+    "points": {
+      "kind": "asset",
+      "asset": "POINTS:GOLD123",
+      "sac_contract_id": "CSACOLD123"
+    }
+  }
+}"#,
+    )
+    .expect("history artifact should be written");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "release", "drift", "testnet"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "release.drift");
+    assert_eq!(json["network"], "testnet");
+    assert_eq!(json["status"], "warn");
+    assert_eq!(json["data"]["expected"]["kind"], "expected");
+    assert_eq!(json["data"]["current"]["kind"], "current");
+    assert_eq!(json["data"]["latest_history"]["kind"], "history");
+    assert!(
+        find_check(&json, "release:testnet:history:drift")["detail"]
+            .as_str()
+            .expect("history drift detail should be present")
+            .contains("contract `rewards`")
+    );
+}
+
+#[test]
 fn doctor_project_reports_scaffold_and_release_gaps() {
     let root = init_rewards_project();
     fs::remove_file(root.join("apps/api/src/routes/events.ts"))
@@ -3572,6 +5973,8 @@ fn doctor_project_reports_contract_openapi_and_events_config_drift() {
         .expect("frontend index should be removable for the test");
     fs::remove_file(root.join("apps/web/scripts/ui-smoke.mjs"))
         .expect("frontend smoke runner should be removable for the test");
+    fs::remove_file(root.join("apps/web/scripts/ui-browser-smoke.mjs"))
+        .expect("frontend browser smoke runner should be removable for the test");
     fs::write(
         root.join("apps/api/.env"),
         "STELLAR_EVENTS_RESOURCES=contract:missing\n",
@@ -3596,6 +5999,10 @@ fn doctor_project_reports_contract_openapi_and_events_config_drift() {
         find_check(&json, "frontend:ui-smoke-runner")["status"],
         "error"
     );
+    assert_eq!(
+        find_check(&json, "frontend:ui-browser-smoke-runner")["status"],
+        "error"
+    );
     assert_eq!(find_check(&json, "events:config")["status"], "warn");
     assert!(
         find_check(&json, "events:config")["detail"]
@@ -3603,6 +6010,50 @@ fn doctor_project_reports_contract_openapi_and_events_config_drift() {
             .expect("events config detail should be present")
             .contains("contract:missing")
     );
+}
+
+#[test]
+fn doctor_fix_restores_managed_files_and_reexports_release_state() {
+    let root = init_rewards_project();
+    seed_testnet_release_lockfile(&root);
+    fs::remove_file(root.join("scripts/doctor.mjs"))
+        .expect("doctor script should be removable for the test");
+    fs::remove_file(root.join("workers/events/ingest-events.mjs"))
+        .expect("worker should be removable for the test");
+    fs::remove_file(root.join("apps/api/openapi.json"))
+        .expect("openapi should be removable for the test");
+    fs::remove_file(root.join("apps/web/src/generated/stellar.ts"))
+        .expect("generated state should be removable for the test");
+    fs::write(root.join(".env.generated"), "BROKEN=1\n")
+        .expect("env.generated should be writable for the test");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "doctor", "fix"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "doctor.fix");
+    assert_eq!(json["status"], "ok");
+    assert!(read(root.join("scripts/doctor.mjs")).contains("['doctor'"));
+    assert!(read(root.join("workers/events/ingest-events.mjs")).contains("'events'"));
+    assert!(read(root.join("apps/api/openapi.json")).contains("/contracts/rewards/call/{fn}"));
+    assert!(read(root.join("apps/web/src/generated/stellar.ts")).contains("CREWARDS123"));
+    let env_generated = read(root.join(".env.generated"));
+    assert!(env_generated.contains("PUBLIC_REWARDS_CONTRACT_ID=CREWARDS123"));
+    assert!(env_generated.contains("PUBLIC_POINTS_SAC_ID=CSAC123"));
+    let repaired = json["data"]["repaired"]
+        .as_array()
+        .expect("repaired should be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(repaired.contains(&"scripts"));
+    assert!(repaired.contains(&"release_artifact"));
+    assert!(root.join("dist/deploy.testnet.json").exists());
 }
 
 #[test]
@@ -3784,8 +6235,40 @@ fn doctor_network_dry_run_plans_endpoint_probes() {
 }
 
 #[test]
+fn dev_status_dry_run_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/dev.status.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "--dry-run",
+            "dev",
+            "status",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "dev.status");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("dev status out should parse");
+    assert_eq!(out_json["action"], "dev.status");
+}
+
+#[test]
 fn dev_reseed_dry_run_resets_event_state_and_exports_env() {
     let root = init_rewards_project();
+    let out_path = root.join("dist/dev.reseed.json");
     fs::write(
         root.join("workers/events/cursors.json"),
         r#"{
@@ -3815,6 +6298,8 @@ fn dev_reseed_dry_run_resets_event_state_and_exports_env() {
             "testnet",
             "dev",
             "reseed",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
         ])
         .output()
         .expect("command should run");
@@ -3822,6 +6307,10 @@ fn dev_reseed_dry_run_resets_event_state_and_exports_env() {
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
     assert_eq!(json["action"], "dev.reseed");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
     assert_eq!(json["data"]["event_state_reset"], true);
     assert_eq!(json["data"]["env_exported"], true);
     assert_eq!(json["data"]["verification_ran"], false);
@@ -3867,6 +6356,807 @@ fn dev_reseed_dry_run_resets_event_state_and_exports_env() {
             .expect("next should be an array")
             .iter()
             .any(|value| value.as_str() == Some("stellar forge release verify testnet"))
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("dev reseed out should parse");
+    assert_eq!(out_json["action"], "dev.reseed");
+}
+
+#[test]
+fn contract_new_writes_report_to_out_path() {
+    let root = init_rewards_project();
+    let out_path = root.join("dist/contract.new.json");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args([
+            "--json",
+            "contract",
+            "new",
+            "escrow",
+            "--template",
+            "escrow",
+            "--out",
+            out_path.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.new");
+    assert_eq!(
+        json["data"]["out"],
+        out_path.to_str().expect("out path should be valid UTF-8")
+    );
+    let out_json: Value =
+        serde_json::from_str(&read(&out_path)).expect("contract new out should parse");
+    assert_eq!(out_json["action"], "contract.new");
+}
+
+#[test]
+fn contract_new_basic_without_stellar_generates_starter_contract_scaffold() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", "")
+        .args(["--json", "contract", "new", "hello", "--template", "basic"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.new");
+    assert!(
+        json["warnings"]
+            .as_array()
+            .expect("warnings should be an array")
+            .iter()
+            .any(|value| value
+                .as_str()
+                .is_some_and(|warning| warning.contains("local contract scaffold")))
+    );
+
+    let manifest = read(root.join("stellarforge.toml"));
+    let cargo_toml = read(root.join("contracts/hello/Cargo.toml"));
+    let lib_rs = read(root.join("contracts/hello/src/lib.rs"));
+    let test_rs = read(root.join("contracts/hello/src/test.rs"));
+    let readme = read(root.join("contracts/hello/README.md"));
+    let openapi = read(root.join("apps/api/openapi.json"));
+    let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
+
+    assert!(manifest.contains("[contracts.hello]"));
+    assert!(manifest.contains("template = \"basic\""));
+    assert!(cargo_toml.contains("soroban-sdk = \"25\""));
+    assert!(cargo_toml.contains("testutils"));
+    assert!(lib_rs.contains("pub fn init"));
+    assert!(lib_rs.contains("pub fn increment"));
+    assert!(lib_rs.contains("pub fn set_count"));
+    assert!(lib_rs.contains("mod test;"));
+    assert!(test_rs.contains("starter_contract_tracks_admin_and_counter"));
+    assert!(readme.contains("Starter Soroban contract scaffold"));
+    assert!(openapi.contains("/contracts/hello/call/{fn}"));
+    assert!(generated_state.contains("\"hello\""));
+}
+
+#[test]
+fn contract_new_unknown_template_without_stellar_uses_starter_fallback() {
+    let root = init_rewards_project();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", "")
+        .args([
+            "--json",
+            "contract",
+            "new",
+            "mystery",
+            "--template",
+            "space-market",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "contract.new");
+    assert!(
+        json["warnings"]
+            .as_array()
+            .expect("warnings should be an array")
+            .iter()
+            .any(|value| value
+                .as_str()
+                .is_some_and(|warning| warning.contains("starter fallback scaffold")))
+    );
+
+    let lib_rs = read(root.join("contracts/mystery/src/lib.rs"));
+    let test_rs = read(root.join("contracts/mystery/src/test.rs"));
+    let readme = read(root.join("contracts/mystery/README.md"));
+
+    assert!(lib_rs.contains("pub fn increment"));
+    assert!(test_rs.contains("starter_contract_tracks_admin_and_counter"));
+    assert!(readme.contains("template `space-market`"));
+    assert!(!readme.contains("Scaffolded contract placeholder"));
+}
+
+#[test]
+fn token_contract_command_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let create_root = init_rewards_project();
+    let create_out = create_root.join("dist/token.create.json");
+    let create_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&create_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "token",
+            "create",
+            "credits",
+            "--mode",
+            "contract",
+            "--metadata-name",
+            "Store Credit",
+            "--initial-supply",
+            "25",
+            "--out",
+            create_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(create_output.status.success());
+    assert_report(&create_output.stdout, "token.create", &create_out);
+
+    let mint_root = init_contract_token_project();
+    let mint_out = mint_root.join("dist/token.mint.json");
+    let mint_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&mint_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "token",
+            "mint",
+            "credits",
+            "--to",
+            "alice",
+            "--amount",
+            "10",
+            "--from",
+            "issuer",
+            "--out",
+            mint_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(mint_output.status.success());
+    assert_report(&mint_output.stdout, "token.mint", &mint_out);
+
+    let init_root = init_contract_token_project();
+    let init_out = init_root.join("dist/token.contract.init.json");
+    let init_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&init_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "token",
+            "contract",
+            "init",
+            "credits",
+            "--out",
+            init_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(init_output.status.success());
+    assert_report(&init_output.stdout, "token.contract.init", &init_out);
+}
+
+#[test]
+fn token_classic_command_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let transfer_root = init_rewards_project();
+    let transfer_out = transfer_root.join("dist/token.transfer.json");
+    let transfer_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&transfer_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "transfer",
+            "points",
+            "--to",
+            "alice",
+            "--amount",
+            "10",
+            "--from",
+            "treasury",
+            "--out",
+            transfer_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(transfer_output.status.success());
+    assert_report(&transfer_output.stdout, "wallet.pay", &transfer_out);
+
+    let trust_root = init_rewards_project();
+    let trust_out = trust_root.join("dist/token.trust.json");
+    let trust_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&trust_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "trust",
+            "points",
+            "alice",
+            "--out",
+            trust_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(trust_output.status.success());
+    assert_report(&trust_output.stdout, "wallet.trust", &trust_out);
+
+    let freeze_root = init_rewards_project();
+    let freeze_out = freeze_root.join("dist/token.freeze.json");
+    let freeze_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&freeze_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "freeze",
+            "points",
+            "alice",
+            "--out",
+            freeze_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(freeze_output.status.success());
+    assert_report(&freeze_output.stdout, "token.freeze", &freeze_out);
+
+    let unfreeze_root = init_rewards_project();
+    let unfreeze_out = unfreeze_root.join("dist/token.unfreeze.json");
+    let unfreeze_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&unfreeze_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "unfreeze",
+            "points",
+            "alice",
+            "--out",
+            unfreeze_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(unfreeze_output.status.success());
+    assert_report(&unfreeze_output.stdout, "token.unfreeze", &unfreeze_out);
+
+    let unsupported_manifest = read(unfreeze_root.join("stellarforge.toml")).replace(
+        "auth_required = true\nauth_revocable = true",
+        "auth_required = false\nauth_revocable = false",
+    );
+    fs::write(
+        unfreeze_root.join("stellarforge.toml"),
+        unsupported_manifest,
+    )
+    .expect("manifest should be updated");
+    let unsupported = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&unfreeze_root)
+        .args(["--json", "--dry-run", "token", "freeze", "points", "alice"])
+        .output()
+        .expect("unsupported freeze command should run");
+
+    assert!(!unsupported.status.success());
+    assert_eq!(unsupported.status.code(), Some(2));
+    let unsupported_json: Value =
+        serde_json::from_slice(&unsupported.stdout).expect("stdout should be valid json");
+    assert_eq!(unsupported_json["action"], "token.freeze");
+    assert_eq!(unsupported_json["data"]["error_code"], "input");
+    assert!(
+        unsupported_json["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("does not support freeze/unfreeze")
+    );
+
+    let burn_root = init_rewards_project();
+    let burn_out = burn_root.join("dist/token.burn.json");
+    let burn_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&burn_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "burn",
+            "points",
+            "--amount",
+            "5",
+            "--from",
+            "treasury",
+            "--out",
+            burn_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(burn_output.status.success());
+    assert_report(&burn_output.stdout, "token.burn", &burn_out);
+
+    let clawback_root = init_rewards_project();
+    let clawback_out = clawback_root.join("dist/token.clawback.json");
+    let clawback_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&clawback_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "token",
+            "clawback",
+            "points",
+            "alice",
+            "1",
+            "--out",
+            clawback_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(clawback_output.status.success());
+    assert_report(&clawback_output.stdout, "token.clawback", &clawback_out);
+
+    let sac_id_root = init_rewards_project();
+    let sac_id_out = sac_id_root.join("dist/token.sac.id.json");
+    let sac_id_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&sac_id_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "token",
+            "sac",
+            "id",
+            "points",
+            "--out",
+            sac_id_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(sac_id_output.status.success());
+    assert_report(&sac_id_output.stdout, "token.sac.id", &sac_id_out);
+
+    let sac_deploy_root = init_rewards_project();
+    let sac_deploy_out = sac_deploy_root.join("dist/token.sac.deploy.json");
+    let sac_deploy_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&sac_deploy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "token",
+            "sac",
+            "deploy",
+            "points",
+            "--out",
+            sac_deploy_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(sac_deploy_output.status.success());
+    assert_report(
+        &sac_deploy_output.stdout,
+        "token.sac.deploy",
+        &sac_deploy_out,
+    );
+}
+
+#[test]
+fn wallet_command_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let create_root = init_rewards_project();
+    let create_out = create_root.join("dist/wallet.create.json");
+    let fake_bin = install_fake_stellar(&create_root);
+    let create_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&create_root)
+        .env("PATH", test_path(&fake_bin))
+        .args([
+            "--json",
+            "wallet",
+            "create",
+            "bob",
+            "--fund",
+            "--out",
+            create_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(create_output.status.success());
+    assert_report(&create_output.stdout, "wallet.create", &create_out);
+
+    let fund_root = init_rewards_project();
+    let fund_out = fund_root.join("dist/wallet.fund.json");
+    let fund_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&fund_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "fund",
+            "alice",
+            "--out",
+            fund_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(fund_output.status.success());
+    assert_report(&fund_output.stdout, "wallet.fund", &fund_out);
+
+    let trust_root = init_rewards_project();
+    let trust_out = trust_root.join("dist/wallet.trust.json");
+    let trust_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&trust_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "trust",
+            "alice",
+            "points",
+            "--out",
+            trust_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(trust_output.status.success());
+    assert_report(&trust_output.stdout, "wallet.trust", &trust_out);
+
+    let pay_root = init_rewards_project();
+    let pay_out = pay_root.join("dist/wallet.pay.json");
+    let pay_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&pay_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "pay",
+            "--from",
+            "treasury",
+            "--to",
+            "alice",
+            "--asset",
+            "points",
+            "--amount",
+            "10",
+            "--out",
+            pay_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(pay_output.status.success());
+    assert_report(&pay_output.stdout, "wallet.pay", &pay_out);
+
+    let sep7_payment_root = init_rewards_project();
+    let sep7_payment_out = sep7_payment_root.join("dist/wallet.sep7.payment.json");
+    let sep7_payment_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&sep7_payment_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "sep7",
+            "payment",
+            "--from",
+            "treasury",
+            "--to",
+            "alice",
+            "--asset",
+            "points",
+            "--amount",
+            "10",
+            "--out",
+            sep7_payment_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(sep7_payment_output.status.success());
+    assert_report(&sep7_payment_output.stdout, "wallet.pay", &sep7_payment_out);
+
+    let sep7_contract_root = init_rewards_project();
+    seed_testnet_release_lockfile(&sep7_contract_root);
+    let sep7_contract_out = sep7_contract_root.join("dist/wallet.sep7.contract-call.json");
+    let sep7_contract_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&sep7_contract_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "--network",
+            "testnet",
+            "wallet",
+            "sep7",
+            "contract-call",
+            "rewards",
+            "award_points",
+            "--out",
+            sep7_contract_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+            "--",
+            "--member",
+            "alice",
+            "--amount",
+            "25",
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(sep7_contract_output.status.success());
+    assert_report(
+        &sep7_contract_output.stdout,
+        "wallet.sep7.contract-call",
+        &sep7_contract_out,
+    );
+}
+
+#[test]
+fn wallet_smart_mutation_surfaces_write_reports_to_out_paths() {
+    let assert_report = |stdout: &[u8], action: &str, out_path: &Path| {
+        let json: Value = serde_json::from_slice(stdout).expect("stdout should be valid json");
+        assert_eq!(json["action"], action);
+        assert_eq!(
+            json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+        let out_json: Value =
+            serde_json::from_str(&read(out_path)).expect("out report should parse");
+        assert_eq!(out_json["action"], action);
+        assert_eq!(
+            out_json["data"]["out"],
+            out_path.to_str().expect("out path should be valid UTF-8")
+        );
+    };
+
+    let create_root = init_rewards_project();
+    let create_fake_bin = install_fake_stellar(&create_root);
+    let create_out = create_root.join("dist/wallet.smart.create.json");
+    let create_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&create_root)
+        .env("PATH", test_path(&create_fake_bin))
+        .args([
+            "--json",
+            "wallet",
+            "smart",
+            "create",
+            "sentinel",
+            "--mode",
+            "ed25519",
+            "--out",
+            create_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(create_output.status.success());
+    assert_report(&create_output.stdout, "wallet.smart.create", &create_out);
+
+    let scaffold_root = init_rewards_project();
+    let scaffold_out = scaffold_root.join("dist/wallet.smart.scaffold.json");
+    let scaffold_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&scaffold_root)
+        .args([
+            "--json",
+            "wallet",
+            "smart",
+            "scaffold",
+            "guardian",
+            "--out",
+            scaffold_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(scaffold_output.status.success());
+    assert_report(
+        &scaffold_output.stdout,
+        "wallet.smart.scaffold",
+        &scaffold_out,
+    );
+
+    let policy_root = init_rewards_project();
+    let policy_fake_bin = install_fake_stellar(&policy_root);
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&policy_root)
+        .env("PATH", test_path(&policy_fake_bin))
+        .args(["wallet", "smart", "create", "sentinel", "--mode", "ed25519"])
+        .assert()
+        .success();
+
+    let daily_limit_out = policy_root.join("dist/wallet.smart.policy.set-daily-limit.json");
+    let daily_limit_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&policy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "smart",
+            "policy",
+            "set-daily-limit",
+            "sentinel",
+            "1250",
+            "--build-only",
+            "--out",
+            daily_limit_out
+                .to_str()
+                .expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(daily_limit_output.status.success());
+    assert_report(
+        &daily_limit_output.stdout,
+        "wallet.smart.policy.set-daily-limit",
+        &daily_limit_out,
+    );
+
+    let allow_out = policy_root.join("dist/wallet.smart.policy.allow.json");
+    let allow_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&policy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "smart",
+            "policy",
+            "allow",
+            "sentinel",
+            "alice",
+            "--build-only",
+            "--out",
+            allow_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(allow_output.status.success());
+    assert_report(
+        &allow_output.stdout,
+        "wallet.smart.policy.allow",
+        &allow_out,
+    );
+
+    let revoke_out = policy_root.join("dist/wallet.smart.policy.revoke.json");
+    let revoke_output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&policy_root)
+        .args([
+            "--json",
+            "--dry-run",
+            "wallet",
+            "smart",
+            "policy",
+            "revoke",
+            "sentinel",
+            "alice",
+            "--build-only",
+            "--out",
+            revoke_out.to_str().expect("out path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("command should run");
+
+    assert!(revoke_output.status.success());
+    assert_report(
+        &revoke_output.stdout,
+        "wallet.smart.policy.revoke",
+        &revoke_out,
     );
 }
 
@@ -3938,6 +7228,14 @@ exit 1
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
         .expect("fake stellar should be executable");
     bin_dir
+}
+
+fn test_path(fake_bin: &Path) -> String {
+    format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").expect("PATH should exist")
+    )
 }
 
 fn init_contract_token_project() -> std::path::PathBuf {
@@ -4146,6 +7444,58 @@ fn seed_testnet_release_lockfile(root: &Path) {
 
 fn read(path: impl AsRef<Path>) -> String {
     fs::read_to_string(path).expect("file should exist")
+}
+
+fn install_fake_pnpm(root: &Path) -> PathBuf {
+    let bin_dir = root.join(".test-bin-pnpm");
+    fs::create_dir_all(&bin_dir).expect("pnpm bin dir should be created");
+    let script_path = bin_dir.join("pnpm");
+    fs::write(
+        &script_path,
+        r#"#!/bin/sh
+exit 0
+"#,
+    )
+    .expect("fake pnpm should be written");
+    #[cfg(unix)]
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+        .expect("fake pnpm should be executable");
+    bin_dir
+}
+
+fn install_recording_fake_commands(root: &Path, names: &[&str]) -> PathBuf {
+    let bin_dir = root.join(".test-bin-recording");
+    fs::create_dir_all(&bin_dir).expect("recording bin dir should be created");
+    for name in names {
+        let script = format!(
+            "#!/bin/sh\nif [ -n \"$FAKE_LOG_PATH\" ]; then\n  printf '%s|%s|%s\\n' '{name}' \"$PWD\" \"$*\" >> \"$FAKE_LOG_PATH\"\nfi\nexit 0\n"
+        );
+        let script_path = bin_dir.join(name);
+        fs::write(&script_path, &script).expect("recording fake command should be written");
+        #[cfg(unix)]
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
+            .expect("recording fake command should be executable");
+
+        if *name == "cargo" {
+            let cargo_home_bin = root.join(".cargo").join("bin");
+            fs::create_dir_all(&cargo_home_bin).expect("home cargo bin dir should be created");
+            let cargo_home_script = cargo_home_bin.join(name);
+            fs::write(&cargo_home_script, &script)
+                .expect("home cargo fake command should be written");
+            #[cfg(unix)]
+            fs::set_permissions(&cargo_home_script, fs::Permissions::from_mode(0o755))
+                .expect("home cargo fake command should be executable");
+        }
+    }
+    bin_dir
+}
+
+fn read_invocation_log(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .expect("invocation log should be readable")
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn stellar_available() -> bool {

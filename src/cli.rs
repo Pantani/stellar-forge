@@ -42,6 +42,7 @@ pub enum Command {
     Init(InitArgs),
     Project(ProjectArgs),
     Dev(DevArgs),
+    Scenario(ScenarioArgs),
     Contract(ContractArgs),
     Token(TokenArgs),
     Wallet(WalletArgs),
@@ -70,11 +71,11 @@ pub struct InitArgs {
     pub network: String,
     #[arg(long, default_value = "pnpm")]
     pub package_manager: String,
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    #[arg(long)]
     pub git: bool,
     #[arg(long)]
     pub no_git: bool,
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    #[arg(long)]
     pub install: bool,
     #[arg(long)]
     pub no_install: bool,
@@ -99,11 +100,18 @@ pub struct ProjectArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ProjectCommand {
-    Info,
-    Sync,
-    Validate,
+    Info(ProjectReportArgs),
+    Sync(ProjectReportArgs),
+    Validate(ProjectReportArgs),
+    Smoke(ProjectSmokeArgs),
     Add(ProjectAddArgs),
     Adopt(ProjectAdoptArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ProjectReportArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -118,11 +126,18 @@ pub enum ProjectAddTarget {
         name: String,
         #[arg(long, default_value = "basic")]
         template: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
-    Api,
+    Api {
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     Frontend {
         #[arg(long, default_value = "react-vite")]
         framework: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -132,9 +147,19 @@ pub struct ProjectAdoptArgs {
     pub source: ProjectAdoptSource,
 }
 
+#[derive(Debug, Args, Clone)]
+pub struct ProjectSmokeArgs {
+    #[arg(long)]
+    pub install: bool,
+    #[arg(long)]
+    pub browser: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
 #[derive(Debug, Subcommand, Clone)]
 pub enum ProjectAdoptSource {
-    Scaffold,
+    Scaffold(ProjectReportArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -145,24 +170,95 @@ pub struct DevArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum DevCommand {
-    Up,
-    Down,
-    Status,
-    Reset,
-    Reseed,
-    Fund {
-        target: String,
-    },
-    Watch {
-        #[arg(long, default_value_t = 1500)]
-        interval_ms: u64,
-        #[arg(long)]
-        once: bool,
-    },
-    Events {
-        resource: Option<String>,
-    },
-    Logs,
+    Up(DevReportArgs),
+    Down(DevReportArgs),
+    Status(DevReportArgs),
+    Reset(DevReportArgs),
+    Reseed(DevReportArgs),
+    Snapshot(DevSnapshotArgs),
+    Fund(DevFundArgs),
+    Watch(DevWatchArgs),
+    Events(DevEventsArgs),
+    Logs(DevReportArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevReportArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevFundArgs {
+    pub target: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevWatchArgs {
+    #[arg(long, default_value_t = 1500)]
+    pub interval_ms: u64,
+    #[arg(long)]
+    pub once: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevEventsArgs {
+    pub resource: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevSnapshotArgs {
+    #[command(subcommand)]
+    pub command: DevSnapshotCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+pub enum DevSnapshotCommand {
+    Save(DevSnapshotSaveArgs),
+    Load(DevSnapshotLoadArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevSnapshotSaveArgs {
+    pub name: Option<String>,
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DevSnapshotLoadArgs {
+    pub name: Option<String>,
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ScenarioArgs {
+    #[command(subcommand)]
+    pub command: ScenarioCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+pub enum ScenarioCommand {
+    Run(ScenarioRunArgs),
+    Test(ScenarioRunArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ScenarioRunArgs {
+    pub name: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -177,25 +273,37 @@ pub enum ContractCommand {
         name: String,
         #[arg(long, default_value = "basic")]
         template: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Build {
         name: Option<String>,
         #[arg(long)]
         optimize: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    Format(ContractFormatArgs),
+    Lint(ContractLintArgs),
     Deploy {
         name: String,
         #[arg(long)]
         env: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Call(ContractCallArgs),
     Bind {
         contract: String,
         #[arg(long = "lang", value_delimiter = ',')]
         langs: Vec<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Info {
         contract: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Fetch {
         contract: String,
@@ -203,9 +311,30 @@ pub enum ContractCommand {
         out: Option<PathBuf>,
     },
     Ttl(ContractTtlArgs),
-    Spec {
-        contract: String,
-    },
+    Spec(ContractSpecArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ContractFormatArgs {
+    pub name: Option<String>,
+    #[arg(long)]
+    pub check: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ContractLintArgs {
+    pub name: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ContractSpecArgs {
+    pub contract: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -233,6 +362,8 @@ pub struct ContractTtlMutationArgs {
     pub ttl_ledger_only: bool,
     #[arg(long)]
     pub build_only: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -249,6 +380,8 @@ pub struct ContractCallArgs {
     pub send: String,
     #[arg(long)]
     pub build_only: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
     #[arg(last = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }
@@ -264,34 +397,56 @@ pub enum TokenCommand {
     Create(TokenCreateArgs),
     Info {
         name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    Airdrop(TokenAirdropArgs),
+    AirdropReconcile(TokenAirdropReconcileArgs),
+    AirdropResume(TokenAirdropResumeArgs),
+    AirdropReport(TokenAirdropArgs),
+    AirdropValidate(TokenAirdropArgs),
+    AirdropPreview(TokenAirdropArgs),
+    AirdropSummary(TokenAirdropArgs),
     Mint(TokenMoveArgs),
     Burn(TokenBurnArgs),
     Transfer(TokenMoveArgs),
     Trust {
         name: String,
         wallet: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Freeze {
         name: String,
         holder: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Unfreeze {
         name: String,
         holder: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Clawback {
         name: String,
         from: String,
         amount: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Sac(TokenSacArgs),
     Contract(TokenContractArgs),
-    Balance {
-        name: String,
-        #[arg(long)]
-        holder: Option<String>,
-    },
+    Balance(TokenBalanceArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TokenBalanceArgs {
+    pub name: String,
+    #[arg(long)]
+    pub holder: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -317,6 +472,67 @@ pub struct TokenCreateArgs {
     pub clawback_enabled: bool,
     #[arg(long)]
     pub metadata_name: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TokenAirdropArgs {
+    pub name: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub from: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+    #[arg(long)]
+    pub sep7: bool,
+    #[arg(long)]
+    pub build_only: bool,
+    #[arg(long)]
+    pub relayer: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TokenAirdropReconcileArgs {
+    pub name: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub from: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TokenAirdropResumeArgs {
+    pub name: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub from: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+    #[arg(long)]
+    pub start_at: Option<usize>,
+    #[arg(long, value_delimiter = ',')]
+    pub skip: Vec<usize>,
+    #[arg(long)]
+    pub sep7: bool,
+    #[arg(long)]
+    pub build_only: bool,
+    #[arg(long)]
+    pub relayer: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -328,6 +544,8 @@ pub struct TokenMoveArgs {
     pub amount: String,
     #[arg(long)]
     pub from: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -337,6 +555,8 @@ pub struct TokenBurnArgs {
     pub amount: String,
     #[arg(long)]
     pub from: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -347,8 +567,16 @@ pub struct TokenSacArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum TokenSacCommand {
-    Id { name: String },
-    Deploy { name: String },
+    Id {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Deploy {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -359,7 +587,11 @@ pub struct TokenContractArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum TokenContractCommand {
-    Init { name: String },
+    Init {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -374,33 +606,67 @@ pub enum WalletCommand {
         name: String,
         #[arg(long)]
         fund: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
-    Ls,
-    Address {
-        name: String,
-    },
+    Ls(WalletLsArgs),
+    Address(WalletAddressArgs),
     Fund {
         name_or_address: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
-    Balances {
-        name_or_address: String,
-    },
+    Balances(WalletBalancesArgs),
     Trust {
         wallet: String,
         token: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Pay(WalletPayArgs),
-    Receive {
-        wallet: String,
-        #[arg(long)]
-        sep7: bool,
-        #[arg(long)]
-        qr: bool,
-        #[arg(long)]
-        asset: Option<String>,
-    },
+    BatchPay(WalletBatchPayArgs),
+    BatchReconcile(WalletBatchReconcileArgs),
+    BatchResume(WalletBatchResumeArgs),
+    BatchReport(WalletBatchPayArgs),
+    BatchValidate(WalletBatchPayArgs),
+    BatchPreview(WalletBatchPayArgs),
+    BatchSummary(WalletBatchPayArgs),
+    Receive(WalletReceiveArgs),
     Sep7(WalletSep7Args),
     Smart(WalletSmartArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletLsArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletAddressArgs {
+    pub name: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletBalancesArgs {
+    pub name_or_address: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletReceiveArgs {
+    pub wallet: String,
+    #[arg(long)]
+    pub sep7: bool,
+    #[arg(long)]
+    pub qr: bool,
+    #[arg(long)]
+    pub asset: Option<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -413,6 +679,70 @@ pub struct WalletPayArgs {
     pub asset: String,
     #[arg(long)]
     pub amount: String,
+    #[arg(long)]
+    pub sep7: bool,
+    #[arg(long)]
+    pub build_only: bool,
+    #[arg(long)]
+    pub relayer: bool,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletBatchPayArgs {
+    #[arg(long)]
+    pub from: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub asset: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+    #[arg(long)]
+    pub sep7: bool,
+    #[arg(long)]
+    pub build_only: bool,
+    #[arg(long)]
+    pub relayer: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletBatchReconcileArgs {
+    #[arg(long)]
+    pub from: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub asset: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletBatchResumeArgs {
+    #[arg(long)]
+    pub from: String,
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub asset: Option<String>,
+    #[arg(long)]
+    pub format: Option<String>,
+    #[arg(long)]
+    pub start_at: Option<usize>,
+    #[arg(long, value_delimiter = ',')]
+    pub skip: Vec<usize>,
     #[arg(long)]
     pub sep7: bool,
     #[arg(long)]
@@ -451,13 +781,135 @@ pub enum WalletSmartCommand {
         name: String,
         #[arg(long, value_enum, default_value = "ed25519")]
         mode: SmartWalletMode,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Scaffold {
         name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Info {
         name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    Onboard(WalletSmartOnboardArgs),
+    Provision {
+        name: String,
+        #[arg(long)]
+        address: Option<String>,
+        #[arg(long)]
+        fund: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Materialize {
+        name: String,
+        #[arg(long)]
+        fund: bool,
+        #[arg(long)]
+        no_policy_deploy: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Controller(WalletSmartControllerArgs),
+    Policy(WalletSmartPolicyArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletSmartControllerArgs {
+    #[command(subcommand)]
+    pub command: WalletSmartControllerCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+pub enum WalletSmartControllerCommand {
+    Rotate {
+        name: String,
+        identity: String,
+        #[arg(long)]
+        fund: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletSmartPolicyArgs {
+    #[command(subcommand)]
+    pub command: WalletSmartPolicyCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+pub enum WalletSmartPolicyCommand {
+    Info(WalletSmartPolicyNamedArgs),
+    Diff(WalletSmartPolicyNamedArgs),
+    Sync(WalletSmartPolicyNamedArgs),
+    Simulate {
+        name: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Apply {
+        name: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        build_only: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    SetDailyLimit {
+        name: String,
+        amount: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        build_only: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Allow {
+        name: String,
+        address: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        build_only: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Revoke {
+        name: String,
+        address: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        build_only: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletSmartOnboardArgs {
+    pub name: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WalletSmartPolicyNamedArgs {
+    pub name: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -468,11 +920,17 @@ pub struct ApiArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ApiCommand {
-    Init,
+    Init(ApiReportArgs),
     Generate(ApiGenerateArgs),
     Openapi(ApiOpenapiArgs),
     Events(ApiEventsArgs),
     Relayer(ApiRelayerArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ApiReportArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -483,8 +941,16 @@ pub struct ApiGenerateArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ApiGenerateTarget {
-    Contract { name: String },
-    Token { name: String },
+    Contract {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Token {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -495,7 +961,7 @@ pub struct ApiOpenapiArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ApiOpenapiCommand {
-    Export,
+    Export(ApiReportArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -506,7 +972,7 @@ pub struct ApiEventsArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ApiEventsCommand {
-    Init,
+    Init(ApiReportArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -517,7 +983,7 @@ pub struct ApiRelayerArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ApiRelayerCommand {
-    Init,
+    Init(ApiReportArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -528,10 +994,35 @@ pub struct EventsArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum EventsCommand {
+    Status(EventsStatusArgs),
+    Export(EventsExportArgs),
+    Replay(EventsReplayArgs),
     Watch(EventsWatchArgs),
     Ingest(EventsIngestArgs),
     Cursor(EventsCursorArgs),
     Backfill(EventsBackfillArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct EventsStatusArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct EventsExportArgs {
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct EventsReplayArgs {
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -546,6 +1037,8 @@ pub struct EventsWatchArgs {
     pub cursor: Option<String>,
     #[arg(long = "start-ledger")]
     pub start_ledger: Option<u64>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -559,6 +1052,8 @@ pub struct EventsBackfillArgs {
     pub cursor: Option<String>,
     #[arg(long = "start-ledger")]
     pub start_ledger: Option<u64>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -569,7 +1064,7 @@ pub struct EventsIngestArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum EventsIngestCommand {
-    Init,
+    Init(EventsReportArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -580,8 +1075,24 @@ pub struct EventsCursorArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum EventsCursorCommand {
-    Ls,
-    Reset { name: String },
+    Ls(EventsCursorLsArgs),
+    Reset {
+        name: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct EventsCursorLsArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct EventsReportArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -594,15 +1105,58 @@ pub struct ReleaseArgs {
 pub enum ReleaseCommand {
     Plan {
         env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Deploy {
         env: String,
         #[arg(long)]
         confirm_mainnet: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     Verify {
         env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
+    Status {
+        env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Drift {
+        env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Diff {
+        env: String,
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    History {
+        env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Inspect {
+        env: String,
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Rollback {
+        env: String,
+        #[arg(long)]
+        to: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Prune(ReleasePruneArgs),
     Aliases(ReleaseAliasesArgs),
     Env(ReleaseEnvArgs),
     Registry(ReleaseRegistryArgs),
@@ -616,7 +1170,11 @@ pub struct ReleaseAliasesArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ReleaseAliasesCommand {
-    Sync { env: String },
+    Sync {
+        env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -627,7 +1185,11 @@ pub struct ReleaseEnvArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ReleaseEnvCommand {
-    Export { env: String },
+    Export {
+        env: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -638,22 +1200,81 @@ pub struct ReleaseRegistryArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum ReleaseRegistryCommand {
-    Publish { contract: String },
-    Deploy { contract: String },
+    Publish {
+        contract: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Deploy {
+        contract: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ReleasePruneArgs {
+    pub env: String,
+    #[arg(long, default_value_t = 10)]
+    pub keep: usize,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
 pub struct DoctorArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<DoctorCommand>,
 }
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum DoctorCommand {
-    Env,
-    Deps,
-    Network { env: String },
-    Project,
+    Env(DoctorReportArgs),
+    Deps(DoctorReportArgs),
+    Audit(DoctorAuditArgs),
+    Fix(DoctorFixArgs),
+    Network(DoctorNetworkArgs),
+    Project(DoctorReportArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DoctorAuditArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DoctorReportArgs {
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DoctorNetworkArgs {
+    pub env: String,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DoctorFixArgs {
+    #[arg(long, value_enum)]
+    pub scope: Option<DoctorFixScope>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DoctorFixScope {
+    All,
+    Scripts,
+    Events,
+    Api,
+    Frontend,
+    Release,
+    Lockfile,
 }
 
 impl Command {
@@ -661,32 +1282,43 @@ impl Command {
         match self {
             Command::Init(_) => "init",
             Command::Project(args) => match &args.command {
-                ProjectCommand::Info => "project.info",
-                ProjectCommand::Sync => "project.sync",
-                ProjectCommand::Validate => "project.validate",
+                ProjectCommand::Info(_) => "project.info",
+                ProjectCommand::Sync(_) => "project.sync",
+                ProjectCommand::Validate(_) => "project.validate",
+                ProjectCommand::Smoke(_) => "project.smoke",
                 ProjectCommand::Add(args) => match &args.target {
                     ProjectAddTarget::Contract { .. } => "project.add.contract",
-                    ProjectAddTarget::Api => "project.add.api",
+                    ProjectAddTarget::Api { .. } => "project.add.api",
                     ProjectAddTarget::Frontend { .. } => "project.add.frontend",
                 },
                 ProjectCommand::Adopt(args) => match &args.source {
-                    ProjectAdoptSource::Scaffold => "project.adopt.scaffold",
+                    ProjectAdoptSource::Scaffold(_) => "project.adopt.scaffold",
                 },
             },
             Command::Dev(args) => match &args.command {
-                DevCommand::Up => "dev.up",
-                DevCommand::Down => "dev.down",
-                DevCommand::Status => "dev.status",
-                DevCommand::Reset => "dev.reset",
-                DevCommand::Reseed => "dev.reseed",
-                DevCommand::Fund { .. } => "dev.fund",
-                DevCommand::Watch { .. } => "dev.watch",
-                DevCommand::Events { .. } => "dev.events",
-                DevCommand::Logs => "dev.logs",
+                DevCommand::Up(_) => "dev.up",
+                DevCommand::Down(_) => "dev.down",
+                DevCommand::Status(_) => "dev.status",
+                DevCommand::Reset(_) => "dev.reset",
+                DevCommand::Reseed(_) => "dev.reseed",
+                DevCommand::Snapshot(args) => match &args.command {
+                    DevSnapshotCommand::Save(_) => "dev.snapshot.save",
+                    DevSnapshotCommand::Load(_) => "dev.snapshot.load",
+                },
+                DevCommand::Fund(_) => "dev.fund",
+                DevCommand::Watch(_) => "dev.watch",
+                DevCommand::Events(_) => "dev.events",
+                DevCommand::Logs(_) => "dev.logs",
+            },
+            Command::Scenario(args) => match &args.command {
+                ScenarioCommand::Run(_) => "scenario.run",
+                ScenarioCommand::Test(_) => "scenario.test",
             },
             Command::Contract(args) => match &args.command {
                 ContractCommand::New { .. } => "contract.new",
                 ContractCommand::Build { .. } => "contract.build",
+                ContractCommand::Format(_) => "contract.format",
+                ContractCommand::Lint(_) => "contract.lint",
                 ContractCommand::Deploy { .. } => "contract.deploy",
                 ContractCommand::Call(_) => "contract.call",
                 ContractCommand::Bind { .. } => "contract.bind",
@@ -696,11 +1328,18 @@ impl Command {
                     ContractTtlCommand::Extend(_) => "contract.ttl.extend",
                     ContractTtlCommand::Restore(_) => "contract.ttl.restore",
                 },
-                ContractCommand::Spec { .. } => "contract.spec",
+                ContractCommand::Spec(_) => "contract.spec",
             },
             Command::Token(args) => match &args.command {
                 TokenCommand::Create(_) => "token.create",
                 TokenCommand::Info { .. } => "token.info",
+                TokenCommand::Airdrop(_) => "token.airdrop",
+                TokenCommand::AirdropReconcile(_) => "token.airdrop-reconcile",
+                TokenCommand::AirdropResume(_) => "token.airdrop-resume",
+                TokenCommand::AirdropReport(_) => "token.airdrop-report",
+                TokenCommand::AirdropValidate(_) => "token.airdrop-validate",
+                TokenCommand::AirdropPreview(_) => "token.airdrop-preview",
+                TokenCommand::AirdropSummary(_) => "token.airdrop-summary",
                 TokenCommand::Mint(_) => "token.mint",
                 TokenCommand::Burn(_) => "token.burn",
                 TokenCommand::Transfer(_) => "token.transfer",
@@ -715,17 +1354,24 @@ impl Command {
                 TokenCommand::Contract(args) => match &args.command {
                     TokenContractCommand::Init { .. } => "token.contract.init",
                 },
-                TokenCommand::Balance { .. } => "token.balance",
+                TokenCommand::Balance(_) => "token.balance",
             },
             Command::Wallet(args) => match &args.command {
                 WalletCommand::Create { .. } => "wallet.create",
-                WalletCommand::Ls => "wallet.ls",
-                WalletCommand::Address { .. } => "wallet.address",
+                WalletCommand::Ls(_) => "wallet.ls",
+                WalletCommand::Address(_) => "wallet.address",
                 WalletCommand::Fund { .. } => "wallet.fund",
-                WalletCommand::Balances { .. } => "wallet.balances",
+                WalletCommand::Balances(_) => "wallet.balances",
                 WalletCommand::Trust { .. } => "wallet.trust",
                 WalletCommand::Pay(_) => "wallet.pay",
-                WalletCommand::Receive { .. } => "wallet.receive",
+                WalletCommand::BatchPay(_) => "wallet.batch-pay",
+                WalletCommand::BatchReconcile(_) => "wallet.batch-reconcile",
+                WalletCommand::BatchResume(_) => "wallet.batch-resume",
+                WalletCommand::BatchReport(_) => "wallet.batch-report",
+                WalletCommand::BatchValidate(_) => "wallet.batch-validate",
+                WalletCommand::BatchPreview(_) => "wallet.batch-preview",
+                WalletCommand::BatchSummary(_) => "wallet.batch-summary",
+                WalletCommand::Receive(_) => "wallet.receive",
                 WalletCommand::Sep7(args) => match &args.command {
                     WalletSep7Command::Payment(_) => "wallet.sep7.payment",
                     WalletSep7Command::ContractCall(_) => "wallet.sep7.contract-call",
@@ -734,31 +1380,54 @@ impl Command {
                     WalletSmartCommand::Create { .. } => "wallet.smart.create",
                     WalletSmartCommand::Scaffold { .. } => "wallet.smart.scaffold",
                     WalletSmartCommand::Info { .. } => "wallet.smart.info",
+                    WalletSmartCommand::Onboard(_) => "wallet.smart.onboard",
+                    WalletSmartCommand::Provision { .. } => "wallet.smart.provision",
+                    WalletSmartCommand::Materialize { .. } => "wallet.smart.materialize",
+                    WalletSmartCommand::Controller(args) => match &args.command {
+                        WalletSmartControllerCommand::Rotate { .. } => {
+                            "wallet.smart.controller.rotate"
+                        }
+                    },
+                    WalletSmartCommand::Policy(args) => match &args.command {
+                        WalletSmartPolicyCommand::Info(_) => "wallet.smart.policy.info",
+                        WalletSmartPolicyCommand::Diff(_) => "wallet.smart.policy.diff",
+                        WalletSmartPolicyCommand::Sync(_) => "wallet.smart.policy.sync",
+                        WalletSmartPolicyCommand::Simulate { .. } => "wallet.smart.policy.simulate",
+                        WalletSmartPolicyCommand::Apply { .. } => "wallet.smart.policy.apply",
+                        WalletSmartPolicyCommand::SetDailyLimit { .. } => {
+                            "wallet.smart.policy.set-daily-limit"
+                        }
+                        WalletSmartPolicyCommand::Allow { .. } => "wallet.smart.policy.allow",
+                        WalletSmartPolicyCommand::Revoke { .. } => "wallet.smart.policy.revoke",
+                    },
                 },
             },
             Command::Api(args) => match &args.command {
-                ApiCommand::Init => "api.init",
+                ApiCommand::Init(_) => "api.init",
                 ApiCommand::Generate(args) => match &args.target {
                     ApiGenerateTarget::Contract { .. } => "api.generate.contract",
                     ApiGenerateTarget::Token { .. } => "api.generate.token",
                 },
                 ApiCommand::Openapi(args) => match &args.command {
-                    ApiOpenapiCommand::Export => "api.openapi.export",
+                    ApiOpenapiCommand::Export(_) => "api.openapi.export",
                 },
                 ApiCommand::Events(args) => match &args.command {
-                    ApiEventsCommand::Init => "api.events.init",
+                    ApiEventsCommand::Init(_) => "api.events.init",
                 },
                 ApiCommand::Relayer(args) => match &args.command {
-                    ApiRelayerCommand::Init => "api.relayer.init",
+                    ApiRelayerCommand::Init(_) => "api.relayer.init",
                 },
             },
             Command::Events(args) => match &args.command {
+                EventsCommand::Status(_) => "events.status",
+                EventsCommand::Export(_) => "events.export",
+                EventsCommand::Replay(_) => "events.replay",
                 EventsCommand::Watch(_) => "events.watch",
                 EventsCommand::Ingest(args) => match &args.command {
-                    EventsIngestCommand::Init => "events.ingest.init",
+                    EventsIngestCommand::Init(_) => "events.ingest.init",
                 },
                 EventsCommand::Cursor(args) => match &args.command {
-                    EventsCursorCommand::Ls => "events.cursor.ls",
+                    EventsCursorCommand::Ls(_) => "events.cursor.ls",
                     EventsCursorCommand::Reset { .. } => "events.cursor.reset",
                 },
                 EventsCommand::Backfill(_) => "events.backfill",
@@ -767,6 +1436,13 @@ impl Command {
                 ReleaseCommand::Plan { .. } => "release.plan",
                 ReleaseCommand::Deploy { .. } => "release.deploy",
                 ReleaseCommand::Verify { .. } => "release.verify",
+                ReleaseCommand::Status { .. } => "release.status",
+                ReleaseCommand::Drift { .. } => "release.drift",
+                ReleaseCommand::Diff { .. } => "release.diff",
+                ReleaseCommand::History { .. } => "release.history",
+                ReleaseCommand::Inspect { .. } => "release.inspect",
+                ReleaseCommand::Rollback { .. } => "release.rollback",
+                ReleaseCommand::Prune(_) => "release.prune",
                 ReleaseCommand::Aliases(args) => match &args.command {
                     ReleaseAliasesCommand::Sync { .. } => "release.aliases.sync",
                 },
@@ -780,10 +1456,12 @@ impl Command {
             },
             Command::Doctor(args) => match &args.command {
                 None => "doctor",
-                Some(DoctorCommand::Env) => "doctor.env",
-                Some(DoctorCommand::Deps) => "doctor.deps",
-                Some(DoctorCommand::Network { .. }) => "doctor.network",
-                Some(DoctorCommand::Project) => "doctor.project",
+                Some(DoctorCommand::Env(_)) => "doctor.env",
+                Some(DoctorCommand::Deps(_)) => "doctor.deps",
+                Some(DoctorCommand::Audit(_)) => "doctor.audit",
+                Some(DoctorCommand::Fix(_)) => "doctor.fix",
+                Some(DoctorCommand::Network(_)) => "doctor.network",
+                Some(DoctorCommand::Project(_)) => "doctor.project",
             },
         }
     }

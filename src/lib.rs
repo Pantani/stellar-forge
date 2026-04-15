@@ -8,9 +8,32 @@ use anyhow::{Error, Result};
 use clap::{Parser, error::ErrorKind};
 use cli::Cli;
 use commands::execute;
-use runtime::{AppContext, CommandReport, render_report};
+use runtime::render_report;
 use serde_json::json;
 use std::ffi::{OsStr, OsString};
+
+pub use cli::GlobalOptions;
+pub use runtime::{AppContext, CommandReport};
+
+pub fn release_status(context: &AppContext, env: &str) -> Result<CommandReport> {
+    commands::release::release_status(context, env)
+}
+
+pub fn release_drift(context: &AppContext, env: &str) -> Result<CommandReport> {
+    commands::release::release_drift(context, env)
+}
+
+pub fn release_diff(
+    context: &AppContext,
+    env: &str,
+    path: Option<&std::path::Path>,
+) -> Result<CommandReport> {
+    commands::release::release_diff(context, env, path)
+}
+
+pub fn release_prune(context: &AppContext, env: &str, keep: usize) -> Result<CommandReport> {
+    commands::release::release_prune(context, env, keep)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStream {
@@ -178,6 +201,7 @@ fn classify_error(error: &Error) -> ErrorClass {
             "unsupported event resource prefix",
             "was not recognized; use a contract name",
             "does not use classic trustlines",
+            "does not support freeze/unfreeze",
             "does not resolve to a classic account yet",
             "already exists as a smart wallet",
             "already exists as a classic wallet",
@@ -193,6 +217,7 @@ fn classify_error(error: &Error) -> ErrorClass {
         &message,
         &[
             "confirm_mainnet",
+            "--confirm-mainnet",
             "funding is refused on pubnet",
             "unsafe",
             "refused on pubnet",
@@ -310,6 +335,7 @@ fn classify_error(error: &Error) -> ErrorClass {
         &message,
         &[
             "must be the last segment",
+            "use either `--cursor` or `--start-ledger`",
             "not found",
             "required",
             "invalid",
@@ -378,7 +404,7 @@ fn suggest_next_steps(action: &str, message: &str) -> Vec<String> {
         return vec!["stellar forge init <name>".to_string()];
     }
 
-    if lower.contains("confirm_mainnet") {
+    if lower.contains("confirm_mainnet") || lower.contains("--confirm-mainnet") {
         return vec![
             "rerun with `stellar forge release deploy <env> --confirm-mainnet`".to_string(),
         ];

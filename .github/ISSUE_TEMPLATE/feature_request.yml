@@ -11,12 +11,20 @@ body:
         The most helpful requests explain the workflow you are trying to improve, not only the shape of the feature.
 
   - type: textarea
-    id: problem
+    id: workflow
     attributes:
       label: What workflow is missing or painful?
+      description: Describe the real task you are trying to accomplish.
       placeholder: I can generate a contract scaffold, but I cannot ...
     validations:
       required: true
+
+  - type: textarea
+    id: current-workaround
+    attributes:
+      label: What do you do today instead?
+      description: Manual steps, scripts, adjacent tools, or current workarounds.
+      placeholder: I currently run `stellar contract ...` manually and then patch `stellarforge.lock.json`.
 
   - type: textarea
     id: proposal
@@ -25,6 +33,31 @@ body:
       placeholder: Add a `stellar forge ...` command or manifest option that ...
     validations:
       required: true
+
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Which surfaces would this affect?
+      options:
+        - label: CLI command surface
+        - label: Manifest model
+        - label: JSON reports
+        - label: Generated templates or scaffolds
+        - label: Documentation only
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example command, config, or output
+      description: Concrete examples make it much easier to reason about the request.
+      placeholder: |
+        stellar forge release drift testnet
+
+        or
+
+        [release.testnet]
+        ...
+      render: shell
 
   - type: textarea
     id: alternatives
@@ -36,4 +69,4 @@ body:
     id: additional-context
     attributes:
       label: Additional context
-      description: Links, examples, screenshots, or real project context.
+      description: Links, screenshots, docs references, or real project context.

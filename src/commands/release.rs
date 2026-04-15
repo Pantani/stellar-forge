@@ -1,43 +1,352 @@
 use super::*;
+use crate::model::EnvironmentLock;
 
 pub(super) fn release_command(
     context: &AppContext,
     command: ReleaseCommand,
 ) -> Result<CommandReport> {
-    match command {
-        ReleaseCommand::Plan { env } => release_plan(context, &env),
+    let out = release_command_output_path(&command);
+    let mut report = match command {
+        ReleaseCommand::Plan { env, .. } => release_plan(context, &env),
         ReleaseCommand::Deploy {
             env,
             confirm_mainnet,
+            ..
         } => release_deploy(context, &env, confirm_mainnet),
-        ReleaseCommand::Verify { env } => release_verify(context, &env),
+        ReleaseCommand::Verify { env, .. } => release_verify(context, &env),
+        ReleaseCommand::Status { env, .. } => release_status(context, &env),
+        ReleaseCommand::Drift { env, .. } => release_drift(context, &env),
+        ReleaseCommand::Diff { env, path, .. } => release_diff(context, &env, path.as_deref()),
+        ReleaseCommand::History { env, .. } => release_history(context, &env),
+        ReleaseCommand::Inspect { env, path, .. } => {
+            release_inspect(context, &env, path.as_deref())
+        }
+        ReleaseCommand::Rollback { env, to, .. } => release_rollback(context, &env, to.as_deref()),
+        ReleaseCommand::Prune(args) => release_prune(context, &args.env, args.keep),
         ReleaseCommand::Aliases(args) => match args.command {
-            ReleaseAliasesCommand::Sync { env } => release_aliases_sync(context, &env),
+            ReleaseAliasesCommand::Sync { env, .. } => release_aliases_sync(context, &env),
         },
         ReleaseCommand::Env(args) => match args.command {
-            ReleaseEnvCommand::Export { env } => release_env_export(context, &env),
+            ReleaseEnvCommand::Export { env, .. } => release_env_export(context, &env),
         },
         ReleaseCommand::Registry(args) => match args.command {
-            ReleaseRegistryCommand::Publish { contract } => {
+            ReleaseRegistryCommand::Publish { contract, .. } => {
                 release_registry_publish(context, &contract)
             }
-            ReleaseRegistryCommand::Deploy { contract } => {
+            ReleaseRegistryCommand::Deploy { contract, .. } => {
                 release_registry_deploy(context, &contract)
             }
         },
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn release_command_output_path(command: &ReleaseCommand) -> Option<PathBuf> {
+    match command {
+        ReleaseCommand::Plan { out, .. }
+        | ReleaseCommand::Deploy { out, .. }
+        | ReleaseCommand::Verify { out, .. }
+        | ReleaseCommand::Status { out, .. }
+        | ReleaseCommand::Drift { out, .. }
+        | ReleaseCommand::Diff { out, .. }
+        | ReleaseCommand::History { out, .. }
+        | ReleaseCommand::Inspect { out, .. } => out.clone(),
+        ReleaseCommand::Aliases(args) => match &args.command {
+            ReleaseAliasesCommand::Sync { out, .. } => out.clone(),
+        },
+        ReleaseCommand::Env(args) => match &args.command {
+            ReleaseEnvCommand::Export { out, .. } => out.clone(),
+        },
+        ReleaseCommand::Registry(args) => match &args.command {
+            ReleaseRegistryCommand::Publish { out, .. } => out.clone(),
+            ReleaseRegistryCommand::Deploy { out, .. } => out.clone(),
+        },
+        ReleaseCommand::Rollback { out, .. } => out.clone(),
+        ReleaseCommand::Prune(args) => args.out.clone(),
     }
 }
 
-fn path_check(
-    label: impl Into<String>,
-    path: &Path,
-    missing_status: &str,
-) -> crate::runtime::CheckResult {
-    check(
-        label.into(),
-        if path.exists() { "ok" } else { missing_status },
-        Some(path.display().to_string()),
-    )
+pub fn release_status(context: &AppContext, env: &str) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.status");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let lockfile = load_lockfile(context)?;
+    let root = context.project_root();
+    let current_path = release_artifact_path(&root, env);
+    let current = if current_path.exists() {
+        let (summary, warning) = release_artifact_summary(&current_path, "current")?;
+        if let Some(warning) = warning {
+            report.warnings.push(warning);
+        }
+        Some(summary)
+    } else {
+        None
+    };
+    let history_paths = release_history_artifacts(&root, env)?;
+    let latest_history = if let Some(path) = history_paths.last() {
+        let (summary, warning) = release_artifact_summary(path, "history")?;
+        if let Some(warning) = warning {
+            report.warnings.push(warning);
+        }
+        Some(summary)
+    } else {
+        None
+    };
+
+    report.checks.extend(release_state_checks(
+        &root, &manifest, &lockfile, env, false,
+    ));
+    report.status = aggregate_status(&report.checks);
+    report.network = Some(env.to_string());
+    report.message = Some(format!("release status summarized for `{env}`"));
+    report.next = vec![
+        format!("stellar forge release diff {env}"),
+        format!("stellar forge release prune {env}"),
+    ];
+    report.data = Some(json!({
+        "current": current,
+        "latest_history": latest_history,
+        "history_count": history_paths.len(),
+    }));
+    Ok(report)
+}
+
+pub fn release_drift(context: &AppContext, env: &str) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.drift");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let lockfile = load_lockfile(context)?;
+    let root = context.project_root();
+    let expected_artifact = build_release_artifact(&manifest, &lockfile, env)?;
+    let current_path = release_artifact_path(&root, env);
+    let current = if current_path.exists() {
+        let (summary, warning) = release_artifact_summary(&current_path, "current")?;
+        if let Some(warning) = warning {
+            report.warnings.push(warning);
+        }
+        Some((read_release_artifact_value(&current_path)?, summary))
+    } else {
+        None
+    };
+    let history_paths = release_history_artifacts(&root, env)?;
+    let latest_history = if let Some(path) = history_paths.last() {
+        let (summary, warning) = release_artifact_summary(path, "history")?;
+        if let Some(warning) = warning {
+            report.warnings.push(warning);
+        }
+        Some((read_release_artifact_value(path)?, summary))
+    } else {
+        None
+    };
+
+    report.checks.extend(release_state_checks(
+        &root, &manifest, &lockfile, env, false,
+    ));
+    report.checks.extend(release_registry_artifact_checks(
+        &root, &manifest, &lockfile, env, false,
+    ));
+    if let Some(environment) = lockfile.environments.get(env) {
+        if !context.globals.dry_run && context.command_exists("stellar") {
+            let probe_checks =
+                probe_release_deployments(context, &mut report, &manifest, env, environment)?;
+            report.checks.extend(probe_checks);
+        } else if !environment.contracts.is_empty() || !environment.tokens.is_empty() {
+            report.warnings.push(
+                "skipped on-chain contract fetch probes; run without `--dry-run` on a machine with `stellar` configured to verify deployed IDs"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some((history_artifact, _)) = &latest_history {
+        let history_issues = release_artifact_diff(&expected_artifact, history_artifact);
+        report.checks.push(check(
+            format!("release:{env}:history:drift"),
+            if history_issues.is_empty() {
+                "ok"
+            } else {
+                "warn"
+            },
+            Some(if history_issues.is_empty() {
+                "latest archived release matches the current manifest and lockfile".to_string()
+            } else {
+                history_issues.join("; ")
+            }),
+        ));
+    }
+
+    let current_vs_expected = current
+        .as_ref()
+        .map(|(artifact, _)| release_artifact_diff(&expected_artifact, artifact))
+        .unwrap_or_default();
+    let latest_history_vs_expected = latest_history
+        .as_ref()
+        .map(|(artifact, _)| release_artifact_diff(&expected_artifact, artifact))
+        .unwrap_or_default();
+    let current_vs_latest_history = match (&current, &latest_history) {
+        (Some((current_artifact, _)), Some((history_artifact, _))) => {
+            release_artifact_diff(current_artifact, history_artifact)
+        }
+        _ => Vec::new(),
+    };
+
+    report.status = aggregate_status(&report.checks);
+    report.network = Some(env.to_string());
+    report.message = Some(format!("release drift summarized for `{env}`"));
+    report.next = vec![
+        format!("stellar forge release status {env}"),
+        format!("stellar forge release diff {env}"),
+        format!("stellar forge release history {env}"),
+    ];
+    report.data = Some(json!({
+        "expected": release_artifact_summary_value(&current_path, &expected_artifact, "expected"),
+        "current": current.as_ref().map(|(_, summary)| summary.clone()),
+        "latest_history": latest_history.as_ref().map(|(_, summary)| summary.clone()),
+        "history_count": history_paths.len(),
+        "drift": {
+            "current_vs_expected": current_vs_expected,
+            "latest_history_vs_expected": latest_history_vs_expected,
+            "current_vs_latest_history": current_vs_latest_history,
+        }
+    }));
+    Ok(report)
+}
+
+pub fn release_diff(context: &AppContext, env: &str, path: Option<&Path>) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.diff");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let lockfile = load_lockfile(context)?;
+    let root = context.project_root();
+    let baseline_path = release_artifact_path(&root, env);
+    let baseline_value = if baseline_path.exists() {
+        Some(read_release_artifact_value(&baseline_path)?)
+    } else {
+        None
+    };
+
+    let comparison_path = match path {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => release_history_artifacts(&root, env)?
+            .last()
+            .cloned()
+            .unwrap_or_else(|| baseline_path.clone()),
+    };
+    if !comparison_path.exists() {
+        bail!("release artifact `{}` not found", comparison_path.display());
+    }
+    let comparison_value = read_release_artifact_value(&comparison_path)?;
+    if let Some(artifact_env) = comparison_value.get("environment").and_then(Value::as_str)
+        && artifact_env != env
+    {
+        bail!("artifact environment `{artifact_env}` does not match requested environment `{env}`");
+    }
+
+    let (base_kind, base_value) = if let Some(base_value) = baseline_value {
+        ("current", base_value)
+    } else {
+        (
+            "expected",
+            build_release_artifact(&manifest, &lockfile, env)?,
+        )
+    };
+    let comparison_kind = if path.is_some() {
+        "selected"
+    } else if comparison_path == baseline_path {
+        "current"
+    } else {
+        "history"
+    };
+    let issues = release_artifact_diff(&base_value, &comparison_value);
+    let summary_path = if comparison_path.is_absolute() {
+        comparison_path.clone()
+    } else {
+        root.join(&comparison_path)
+    };
+    let comparison_summary =
+        release_artifact_summary_value(&summary_path, &comparison_value, comparison_kind);
+    report.status = if issues.is_empty() {
+        "ok".to_string()
+    } else {
+        "warn".to_string()
+    };
+    report.network = Some(env.to_string());
+    report.message = Some(format!(
+        "release diff compared `{}` with {}",
+        baseline_path.display(),
+        comparison_path.display()
+    ));
+    report.next = vec![
+        format!("stellar forge release inspect {env}"),
+        format!("stellar forge release prune {env}"),
+    ];
+    report.data = Some(json!({
+        "base": release_artifact_summary_value(&baseline_path, &base_value, base_kind),
+        "comparison": comparison_summary,
+        "issues": issues,
+    }));
+    Ok(report)
+}
+
+pub fn release_prune(context: &AppContext, env: &str, keep: usize) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.prune");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let root = context.project_root();
+    let history = release_history_artifacts(&root, env)?;
+    let keep = keep.min(history.len());
+    let prune_count = history.len().saturating_sub(keep);
+    let prune = history
+        .iter()
+        .take(prune_count)
+        .cloned()
+        .collect::<Vec<_>>();
+    let retain = history
+        .iter()
+        .skip(prune_count)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for path in &prune {
+        report.artifacts.push(path.display().to_string());
+        if !context.globals.dry_run {
+            fs::remove_file(path).with_context(|| {
+                format!(
+                    "failed to remove archived release artifact {}",
+                    path.display()
+                )
+            })?;
+        }
+    }
+
+    report.status = "ok".to_string();
+    report.network = Some(env.to_string());
+    report.message = Some(if prune.is_empty() {
+        format!("no archived release artifacts pruned for `{env}`")
+    } else {
+        format!(
+            "pruned {} archived release artifact(s) for `{env}`",
+            prune.len()
+        )
+    });
+    report.next = vec![format!("stellar forge release status {env}")];
+    report.data = Some(json!({
+        "keep": keep,
+        "pruned": prune.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+        "retained": retain.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+    }));
+    Ok(report)
 }
 
 pub(super) fn release_state_checks(
@@ -248,6 +557,13 @@ fn release_artifact_consistency_check(
             issues.join("; ")
         }),
     )
+}
+
+fn read_release_artifact_value(path: &Path) -> Result<Value> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read release artifact {}", path.display()))?;
+    serde_json::from_str::<Value>(&raw)
+        .with_context(|| format!("failed to parse release artifact {}", path.display()))
 }
 
 fn release_artifact_diff(expected: &Value, actual: &Value) -> Vec<String> {
@@ -463,11 +779,12 @@ fn release_plan(context: &AppContext, env: &str) -> Result<CommandReport> {
 }
 
 fn release_deploy(context: &AppContext, env: &str, confirm_mainnet: bool) -> Result<CommandReport> {
-    if env == "pubnet" && !confirm_mainnet {
+    let manifest = load_manifest(context)?;
+    let network = release_network(&manifest, env)?;
+    if network.kind == "pubnet" && !confirm_mainnet {
         bail!("mainnet deploy requires --confirm-mainnet");
     }
     let mut report = CommandReport::new("release.deploy");
-    let manifest = load_manifest(context)?;
     let (contracts, tokens, generate_env) = release_resources(&manifest, env);
     for token_name in &tokens {
         token::token_create_from_manifest(context, &mut report, &manifest, token_name, env)?;
@@ -488,6 +805,157 @@ fn release_deploy(context: &AppContext, env: &str, confirm_mainnet: bool) -> Res
     report.data = Some(json!({
         "contracts": contracts,
         "tokens": tokens,
+    }));
+    Ok(report)
+}
+
+fn release_rollback(context: &AppContext, env: &str, to: Option<&Path>) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.rollback");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let root = context.project_root();
+    let source_path = match to {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => latest_release_history_artifact(&root, env)?,
+    };
+    let raw = context.read_text(&source_path)?;
+    let artifact = serde_json::from_str::<Value>(&raw)
+        .with_context(|| format!("failed to parse release artifact {}", source_path.display()))?;
+    let restored = release_environment_from_artifact(&artifact, env)?;
+    let contract_names = restored.contracts.keys().cloned().collect::<Vec<_>>();
+    let token_names = restored.tokens.keys().cloned().collect::<Vec<_>>();
+
+    let mut lockfile = load_lockfile(context)?;
+    lockfile.environments.insert(env.to_string(), restored);
+
+    let exported = release_env_export_with_lockfile(context, &manifest, &lockfile, env)?;
+    report.commands.extend(exported.commands);
+    report.artifacts.extend(exported.artifacts);
+    report.warnings.extend(exported.warnings);
+    save_lockfile(context, &mut report, &lockfile)?;
+    report.warnings.push(
+        "rollback restored local release metadata from a deploy snapshot; it does not revert on-chain state"
+            .to_string(),
+    );
+    report.network = Some(env.to_string());
+    report.message = Some(format!(
+        "release metadata for `{env}` restored from {}",
+        source_path.display()
+    ));
+    report.next = vec![
+        format!("stellar forge release verify {env}"),
+        format!("stellar forge release aliases sync {env}"),
+    ];
+    report.data = Some(json!({
+        "source_artifact": source_path.display().to_string(),
+        "contracts": contract_names,
+        "tokens": token_names,
+    }));
+    Ok(report)
+}
+
+fn release_history(context: &AppContext, env: &str) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.history");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let root = context.project_root();
+    let current_path = release_artifact_path(&root, env);
+    let current = if current_path.exists() {
+        let (summary, warning) = release_artifact_summary(&current_path, "current")?;
+        if let Some(warning) = warning {
+            report.warnings.push(warning);
+        }
+        Some(summary)
+    } else {
+        None
+    };
+    let history = release_history_artifacts(&root, env)?
+        .into_iter()
+        .rev()
+        .map(|path| {
+            let (summary, warning) = release_artifact_summary(&path, "history")?;
+            if let Some(warning) = warning {
+                report.warnings.push(warning);
+            }
+            Ok(summary)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    report.network = Some(env.to_string());
+    report.status = if current.is_none() && history.is_empty() {
+        "warn".to_string()
+    } else {
+        "ok".to_string()
+    };
+    report.message = Some(format!("release artifact history listed for `{env}`"));
+    report.next = vec![
+        format!("stellar forge release inspect {env}"),
+        format!("stellar forge release rollback {env}"),
+    ];
+    report.data = Some(json!({
+        "current": current,
+        "history": history,
+    }));
+    Ok(report)
+}
+
+fn release_inspect(context: &AppContext, env: &str, path: Option<&Path>) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.inspect");
+    let manifest = load_manifest(context)?;
+    if !manifest.networks.contains_key(env) {
+        bail!("network `{env}` not found");
+    }
+    let lockfile = load_lockfile(context)?;
+    let root = context.project_root();
+    let selected_path = match path {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => release_artifact_path(&root, env),
+    };
+    if !selected_path.exists() {
+        bail!("release artifact `{}` not found", selected_path.display());
+    }
+    let artifact = read_release_artifact_value(&selected_path)?;
+    if let Some(artifact_env) = artifact.get("environment").and_then(Value::as_str)
+        && artifact_env != env
+    {
+        bail!("artifact environment `{artifact_env}` does not match requested environment `{env}`");
+    }
+    let expected = build_release_artifact(&manifest, &lockfile, env)?;
+    let issues = release_artifact_diff(&expected, &artifact);
+    report.network = Some(env.to_string());
+    report.status = if issues.is_empty() {
+        "ok".to_string()
+    } else {
+        "warn".to_string()
+    };
+    report.message = Some(format!(
+        "release artifact inspected for `{env}` from {}",
+        selected_path.display()
+    ));
+    report.next = vec![
+        format!("stellar forge release verify {env}"),
+        format!(
+            "stellar forge release rollback {env} --to {}",
+            selected_path.display()
+        ),
+    ];
+    report.data = Some(json!({
+        "path": selected_path.display().to_string(),
+        "artifact": artifact,
+        "summary": release_artifact_summary_value(
+            &selected_path,
+            &artifact,
+            if selected_path == release_artifact_path(&root, env) { "current" } else { "history" }
+        ),
+        "comparison": {
+            "status": if issues.is_empty() { "ok" } else { "warn" },
+            "issues": issues,
+        },
     }));
     Ok(report)
 }
@@ -648,26 +1116,36 @@ fn release_aliases_sync(context: &AppContext, env: &str) -> Result<CommandReport
 }
 
 pub(super) fn release_env_export(context: &AppContext, env: &str) -> Result<CommandReport> {
-    let mut report = CommandReport::new("release.env.export");
     let manifest = load_manifest(context)?;
     let lockfile = load_lockfile(context)?;
-    let env_lines = release_env_lines(&manifest, &lockfile, env)?;
+    release_env_export_with_lockfile(context, &manifest, &lockfile, env)
+}
+
+fn release_env_export_with_lockfile(
+    context: &AppContext,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+) -> Result<CommandReport> {
+    let mut report = CommandReport::new("release.env.export");
+    let env_lines = release_env_lines(manifest, lockfile, env)?;
     context.write_text(
         &mut report,
         &context.project_root().join(".env.generated"),
         &(env_lines.join("\n") + "\n"),
     )?;
-    write_release_artifact(context, &mut report, &manifest, &lockfile, env)?;
+    write_release_artifact(context, &mut report, manifest, lockfile, env)?;
     if manifest
         .frontend
         .as_ref()
         .is_some_and(|frontend| frontend.enabled)
     {
-        sync_frontend_generated_state(
+        sync_frontend_generated_state_with_lockfile(
             context,
             &mut report,
             &context.project_root(),
-            &manifest,
+            manifest,
+            lockfile,
             env,
         )?;
     }
@@ -910,7 +1388,11 @@ fn release_registry_deploy(context: &AppContext, contract_name: &str) -> Result<
     Ok(report)
 }
 
-fn release_env_lines(manifest: &Manifest, lockfile: &Lockfile, env: &str) -> Result<Vec<String>> {
+pub(super) fn release_env_lines(
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+) -> Result<Vec<String>> {
     let network = manifest
         .networks
         .get(env)
@@ -1069,7 +1551,7 @@ fn registry_contract_artifact_issues(
     issues
 }
 
-fn write_release_artifact(
+pub(super) fn write_release_artifact(
     context: &AppContext,
     report: &mut CommandReport,
     manifest: &Manifest,
@@ -1077,15 +1559,146 @@ fn write_release_artifact(
     env: &str,
 ) -> Result<()> {
     let artifact = build_release_artifact(manifest, lockfile, env)?;
+    let rendered = serde_json::to_string_pretty(&artifact)?;
+    archive_existing_release_artifact(context, report, &context.project_root(), env, &rendered)?;
     context.write_text(
         report,
         &release_artifact_path(&context.project_root(), env),
-        &serde_json::to_string_pretty(&artifact)?,
+        &rendered,
     )
 }
 
-fn release_artifact_path(root: &Path, env: &str) -> PathBuf {
+pub(super) fn release_artifact_path(root: &Path, env: &str) -> PathBuf {
     root.join("dist").join(format!("deploy.{env}.json"))
+}
+
+fn release_history_dir(root: &Path) -> PathBuf {
+    root.join("dist").join("history")
+}
+
+fn release_history_artifact_path(root: &Path, env: &str) -> PathBuf {
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
+    release_history_dir(root).join(format!("deploy.{env}.{timestamp}.json"))
+}
+
+fn archive_existing_release_artifact(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    env: &str,
+    new_contents: &str,
+) -> Result<Option<PathBuf>> {
+    let path = release_artifact_path(root, env);
+    let Ok(existing) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    if existing == new_contents {
+        return Ok(None);
+    }
+    let archive_path = release_history_artifact_path(root, env);
+    context.write_text(report, &archive_path, &existing)?;
+    Ok(Some(archive_path))
+}
+
+fn latest_release_history_artifact(root: &Path, env: &str) -> Result<PathBuf> {
+    let mut candidates = release_history_artifacts(root, env)?;
+    candidates.pop().ok_or_else(|| {
+        anyhow!(
+            "no release history found for `{env}`; run another release or pass `--to <artifact>`"
+        )
+    })
+}
+
+fn release_history_artifacts(root: &Path, env: &str) -> Result<Vec<PathBuf>> {
+    let history_dir = release_history_dir(root);
+    let prefix = format!("deploy.{env}.");
+    let entries = match fs::read_dir(&history_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read release history directory {}",
+                    history_dir.display()
+                )
+            });
+        }
+    };
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    Ok(candidates)
+}
+
+fn release_network<'a>(manifest: &'a Manifest, env: &str) -> Result<&'a NetworkConfig> {
+    manifest
+        .networks
+        .get(env)
+        .ok_or_else(|| anyhow!("network `{env}` not found"))
+}
+
+fn release_environment_from_artifact(artifact: &Value, env: &str) -> Result<EnvironmentLock> {
+    if let Some(artifact_env) = artifact.get("environment").and_then(Value::as_str)
+        && artifact_env != env
+    {
+        bail!("artifact environment `{artifact_env}` does not match requested environment `{env}`");
+    }
+    let contracts = artifact
+        .get("contracts")
+        .cloned()
+        .ok_or_else(|| anyhow!("release artifact is missing `contracts`"))?;
+    let tokens = artifact
+        .get("tokens")
+        .cloned()
+        .ok_or_else(|| anyhow!("release artifact is missing `tokens`"))?;
+    Ok(EnvironmentLock {
+        contracts: serde_json::from_value(contracts)
+            .context("release artifact contracts are invalid")?,
+        tokens: serde_json::from_value(tokens).context("release artifact tokens are invalid")?,
+    })
+}
+
+fn release_artifact_summary(path: &Path, kind: &str) -> Result<(Value, Option<String>)> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read release artifact {}", path.display()))?;
+    let artifact = serde_json::from_str::<Value>(&raw)
+        .with_context(|| format!("failed to parse release artifact {}", path.display()))?;
+    Ok((release_artifact_summary_value(path, &artifact, kind), None))
+}
+
+fn release_artifact_summary_value(path: &Path, artifact: &Value, kind: &str) -> Value {
+    let contracts = artifact
+        .get("contracts")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let tokens = artifact
+        .get("tokens")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "kind": kind,
+        "path": path.display().to_string(),
+        "project": artifact.pointer("/project/slug").or_else(|| artifact.get("project")).cloned().unwrap_or(Value::Null),
+        "environment": artifact.get("environment").cloned().unwrap_or(Value::Null),
+        "updated_at": artifact.get("updated_at").cloned().unwrap_or(Value::Null),
+        "contracts": {
+            "count": contracts.len(),
+            "names": contracts.keys().cloned().collect::<Vec<_>>(),
+        },
+        "tokens": {
+            "count": tokens.len(),
+            "names": tokens.keys().cloned().collect::<Vec<_>>(),
+        },
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -1324,7 +1937,11 @@ fn write_registry_contract_artifact(
     )
 }
 
-fn build_release_artifact(manifest: &Manifest, lockfile: &Lockfile, env: &str) -> Result<Value> {
+pub(super) fn build_release_artifact(
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+) -> Result<Value> {
     let network = manifest
         .networks
         .get(env)
@@ -1551,38 +2168,15 @@ fn preview_contract_deploy_commands(
             contract.alias.clone(),
         ],
     ));
-    if let Some(init) = token::contract_effective_init_config(manifest, contract_name)? {
-        let mut args = vec![
-            "contract".to_string(),
-            "invoke".to_string(),
-            "--id".to_string(),
-            lockfile
-                .environments
-                .get(env)
-                .and_then(|environment| environment.contracts.get(contract_name))
-                .map(|deployment| deployment.contract_id.clone())
-                .filter(|contract_id| !contract_id.is_empty())
-                .unwrap_or_else(|| contract.alias.clone()),
-            "--source-account".to_string(),
-            source_identity,
-            "--network".to_string(),
-            env.to_string(),
-            "--send".to_string(),
-            "yes".to_string(),
-            "--".to_string(),
-            if init.fn_name.is_empty() {
-                "init".to_string()
-            } else {
-                init.fn_name.clone()
-            },
-        ];
-        for (key, value) in &init.args {
-            args.push(format!("--{key}"));
-            args.push(preview_release_argument_value(
-                manifest, lockfile, env, value,
-            ));
-        }
-        commands.push(render_command("stellar", &args));
+    if let Some(init_command) = preview_release_init_command(
+        manifest,
+        lockfile,
+        env,
+        contract_name,
+        &contract.alias,
+        &source_identity,
+    )? {
+        commands.push(init_command);
     }
     Ok(commands)
 }
@@ -1665,43 +2259,70 @@ fn preview_registry_deploy_commands(
         preview.env.to_string(),
     ])];
     commands.push(registry_cli.render(&["install".to_string(), preview.alias.to_string()]));
-    if let Some(init) = token::contract_effective_init_config(manifest, preview.contract_name)? {
-        let mut args = vec![
-            "contract".to_string(),
-            "invoke".to_string(),
-            "--id".to_string(),
-            lockfile
-                .environments
-                .get(preview.env)
-                .and_then(|environment| environment.contracts.get(preview.contract_name))
-                .map(|deployment| deployment.contract_id.clone())
-                .filter(|contract_id| !contract_id.is_empty())
-                .unwrap_or_else(|| preview.alias.to_string()),
-            "--source-account".to_string(),
-            source_identity,
-            "--network".to_string(),
-            preview.env.to_string(),
-            "--send".to_string(),
-            "yes".to_string(),
-            "--".to_string(),
-            if init.fn_name.is_empty() {
-                "init".to_string()
-            } else {
-                init.fn_name.clone()
-            },
-        ];
-        for (key, value) in &init.args {
-            args.push(format!("--{key}"));
-            args.push(preview_release_argument_value(
-                manifest,
-                lockfile,
-                preview.env,
-                value,
-            ));
-        }
-        commands.push(render_command("stellar", &args));
+    if let Some(init_command) = preview_release_init_command(
+        manifest,
+        lockfile,
+        preview.env,
+        preview.contract_name,
+        preview.alias,
+        &source_identity,
+    )? {
+        commands.push(init_command);
     }
     Ok(commands)
+}
+
+fn preview_release_init_command(
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+    contract_name: &str,
+    fallback_target: &str,
+    source_identity: &str,
+) -> Result<Option<String>> {
+    let Some(init) = token::contract_effective_init_config(manifest, contract_name)? else {
+        return Ok(None);
+    };
+    let mut args = vec![
+        "contract".to_string(),
+        "invoke".to_string(),
+        "--id".to_string(),
+        preview_release_target_id(lockfile, env, contract_name, fallback_target),
+        "--source-account".to_string(),
+        source_identity.to_string(),
+        "--network".to_string(),
+        env.to_string(),
+        "--send".to_string(),
+        "yes".to_string(),
+        "--".to_string(),
+        if init.fn_name.is_empty() {
+            "init".to_string()
+        } else {
+            init.fn_name.clone()
+        },
+    ];
+    for (key, value) in &init.args {
+        args.push(format!("--{key}"));
+        args.push(preview_release_argument_value(
+            manifest, lockfile, env, value,
+        ));
+    }
+    Ok(Some(render_command("stellar", &args)))
+}
+
+fn preview_release_target_id(
+    lockfile: &Lockfile,
+    env: &str,
+    contract_name: &str,
+    fallback_target: &str,
+) -> String {
+    lockfile
+        .environments
+        .get(env)
+        .and_then(|environment| environment.contracts.get(contract_name))
+        .map(|deployment| deployment.contract_id.clone())
+        .filter(|contract_id| !contract_id.is_empty())
+        .unwrap_or_else(|| fallback_target.to_string())
 }
 
 fn preview_token_create_commands(

@@ -26,6 +26,8 @@ pub struct Manifest {
     pub frontend: Option<FrontendConfig>,
     #[serde(default)]
     pub release: BTreeMap<String, ReleaseConfig>,
+    #[serde(default)]
+    pub scenarios: BTreeMap<String, ScenarioConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -185,6 +187,109 @@ pub struct ReleaseConfig {
     pub generate_env: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScenarioConfig {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub identity: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<ScenarioStep>,
+    #[serde(default)]
+    pub assertions: Vec<ScenarioAssertion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "assertion")]
+pub enum ScenarioAssertion {
+    #[serde(rename = "status")]
+    Status { status: String },
+    #[serde(rename = "step")]
+    Step {
+        step: usize,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        command_contains: Vec<String>,
+        #[serde(default)]
+        artifact_contains: Vec<String>,
+        #[serde(default)]
+        warning_contains: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action")]
+pub enum ScenarioStep {
+    #[serde(rename = "project.validate")]
+    ProjectValidate,
+    #[serde(rename = "project.sync")]
+    ProjectSync,
+    #[serde(rename = "dev.up")]
+    DevUp,
+    #[serde(rename = "dev.reseed")]
+    DevReseed,
+    #[serde(rename = "dev.fund")]
+    DevFund { target: String },
+    #[serde(rename = "contract.build")]
+    ContractBuild {
+        #[serde(default)]
+        contract: Option<String>,
+        #[serde(default)]
+        optimize: bool,
+    },
+    #[serde(rename = "contract.deploy")]
+    ContractDeploy {
+        contract: String,
+        #[serde(default)]
+        env: Option<String>,
+    },
+    #[serde(rename = "contract.call")]
+    ContractCall {
+        contract: String,
+        function: String,
+        #[serde(default)]
+        send: Option<String>,
+        #[serde(default)]
+        build_only: bool,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    #[serde(rename = "token.mint")]
+    TokenMint {
+        token: String,
+        to: String,
+        amount: String,
+        #[serde(default)]
+        from: Option<String>,
+    },
+    #[serde(rename = "wallet.pay")]
+    WalletPay {
+        from: String,
+        to: String,
+        asset: String,
+        amount: String,
+        #[serde(default)]
+        sep7: bool,
+        #[serde(default)]
+        build_only: bool,
+        #[serde(default)]
+        relayer: bool,
+    },
+    #[serde(rename = "release.plan")]
+    ReleasePlan {
+        #[serde(default)]
+        env: Option<String>,
+    },
+    #[serde(rename = "release.verify")]
+    ReleaseVerify {
+        #[serde(default)]
+        env: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lockfile {
     pub version: u32,
@@ -253,22 +358,22 @@ impl Manifest {
         if self.project.slug.trim().is_empty() {
             errors.push("project.slug is required".to_string());
         }
-        for (label, names) in [
-            ("network", self.networks.keys().collect::<Vec<_>>()),
-            ("identity", self.identities.keys().collect::<Vec<_>>()),
-            ("wallet", self.wallets.keys().collect::<Vec<_>>()),
-            ("token", self.tokens.keys().collect::<Vec<_>>()),
-            ("contract", self.contracts.keys().collect::<Vec<_>>()),
-            ("release target", self.release.keys().collect::<Vec<_>>()),
-        ] {
-            for name in names {
-                if !is_safe_name(name) {
-                    errors.push(format!(
-                        "{label} key `{name}` must be a single filesystem-safe name"
-                    ));
-                }
-            }
+        if !matches!(
+            self.project.package_manager.as_str(),
+            "pnpm" | "npm" | "yarn" | "bun"
+        ) {
+            errors.push(format!(
+                "project.package_manager `{}` must be one of pnpm, npm, yarn, or bun",
+                self.project.package_manager
+            ));
         }
+        push_unsafe_key_errors(&mut errors, "network", self.networks.keys());
+        push_unsafe_key_errors(&mut errors, "identity", self.identities.keys());
+        push_unsafe_key_errors(&mut errors, "wallet", self.wallets.keys());
+        push_unsafe_key_errors(&mut errors, "token", self.tokens.keys());
+        push_unsafe_key_errors(&mut errors, "contract", self.contracts.keys());
+        push_unsafe_key_errors(&mut errors, "release target", self.release.keys());
+        push_unsafe_key_errors(&mut errors, "scenario", self.scenarios.keys());
         if !self.defaults.network.is_empty() && !self.networks.contains_key(&self.defaults.network)
         {
             errors.push(format!(
@@ -319,6 +424,16 @@ impl Manifest {
             for field in [&token.issuer, &token.distribution] {
                 if let Some(reference) = parse_manifest_ref(field) {
                     match reference {
+                        ManifestRef::Identity(identity) if !is_safe_name(&identity) => {
+                            errors.push(format!(
+                                "token `{name}` references unsafe identity `{identity}`"
+                            ));
+                        }
+                        ManifestRef::Wallet(wallet) if !is_safe_name(&wallet) => {
+                            errors.push(format!(
+                                "token `{name}` references unsafe wallet `{wallet}`"
+                            ));
+                        }
                         ManifestRef::Identity(identity)
                             if !self.identities.contains_key(&identity) =>
                         {
@@ -339,6 +454,101 @@ impl Manifest {
                 errors.push(format!(
                     "token `{name}` is declared as a contract token but no matching contract `{name}` exists in the manifest"
                 ));
+            }
+        }
+        for (name, scenario) in &self.scenarios {
+            if scenario.steps.is_empty() {
+                errors.push(format!("scenario `{name}` must declare at least one step"));
+            }
+            if let Some(network) = scenario.network.as_deref()
+                && !self.networks.contains_key(network)
+            {
+                errors.push(format!(
+                    "scenario `{name}` references missing network `{network}`"
+                ));
+            }
+            if let Some(identity) = scenario.identity.as_deref()
+                && !self.identities.contains_key(identity)
+            {
+                errors.push(format!(
+                    "scenario `{name}` references missing identity `{identity}`"
+                ));
+            }
+            for step in &scenario.steps {
+                match step {
+                    ScenarioStep::ContractBuild {
+                        contract: Some(contract),
+                        ..
+                    }
+                    | ScenarioStep::ContractDeploy { contract, .. }
+                    | ScenarioStep::ContractCall { contract, .. } => {
+                        if !self.contracts.contains_key(contract) {
+                            errors.push(format!(
+                                "scenario `{name}` references missing contract `{contract}`"
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+                if let ScenarioStep::TokenMint { token, .. } = step
+                    && !self.tokens.contains_key(token)
+                {
+                    errors.push(format!(
+                        "scenario `{name}` references missing token `{token}`"
+                    ));
+                }
+                match step {
+                    ScenarioStep::ReleasePlan { env: Some(env) }
+                    | ScenarioStep::ReleaseVerify { env: Some(env) }
+                    | ScenarioStep::ContractDeploy { env: Some(env), .. } => {
+                        if !self.networks.contains_key(env) {
+                            errors.push(format!(
+                                "scenario `{name}` references missing network `{env}`"
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for assertion in &scenario.assertions {
+                match assertion {
+                    ScenarioAssertion::Status { status } => {
+                        if !matches!(status.as_str(), "ok" | "warn" | "error") {
+                            errors.push(format!(
+                                "scenario `{name}` assertion status `{status}` must be one of ok, warn, or error"
+                            ));
+                        }
+                    }
+                    ScenarioAssertion::Step {
+                        step,
+                        status,
+                        command_contains,
+                        artifact_contains,
+                        warning_contains,
+                    } => {
+                        if *step == 0 || *step > scenario.steps.len() {
+                            errors.push(format!(
+                                "scenario `{name}` assertion references missing step `{step}`"
+                            ));
+                        }
+                        if let Some(status) = status
+                            && !matches!(status.as_str(), "ok" | "warn" | "error")
+                        {
+                            errors.push(format!(
+                                "scenario `{name}` step assertion status `{status}` must be one of ok, warn, or error"
+                            ));
+                        }
+                        if status.is_none()
+                            && command_contains.is_empty()
+                            && artifact_contains.is_empty()
+                            && warning_contains.is_empty()
+                        {
+                            errors.push(format!(
+                                "scenario `{name}` step assertion for step `{step}` must declare at least one expectation"
+                            ));
+                        }
+                    }
+                }
             }
         }
         for (name, contract) in &self.contracts {
@@ -377,6 +587,20 @@ impl Manifest {
             Ok(name)
         } else {
             bail!("identity `{name}` is not defined in the manifest");
+        }
+    }
+}
+
+fn push_unsafe_key_errors<'a>(
+    errors: &mut Vec<String>,
+    label: &str,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    for name in names {
+        if !is_safe_name(name) {
+            errors.push(format!(
+                "{label} key `{name}` must be a single filesystem-safe name"
+            ));
         }
     }
 }

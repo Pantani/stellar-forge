@@ -1,22 +1,24 @@
 mod doctor;
 mod events;
-mod release;
+pub(crate) mod release;
 mod token;
 mod wallet;
 
 use crate::cli::{
     ApiCommand, ApiEventsCommand, ApiGenerateTarget, ApiOpenapiCommand, ApiRelayerCommand, Cli,
-    Command, ContractCallArgs, ContractCommand, ContractTtlMutationArgs, DevCommand, DoctorCommand,
+    Command, ContractCallArgs, ContractCommand, ContractTtlMutationArgs, DevCommand,
+    DevSnapshotCommand, DevSnapshotLoadArgs, DevSnapshotSaveArgs, DoctorArgs, DoctorCommand,
     EventsBackfillArgs, EventsCommand, EventsCursorCommand, EventsIngestCommand, EventsWatchArgs,
-    InitArgs, ProjectAddTarget, ProjectCommand, ReleaseAliasesCommand, ReleaseCommand,
-    ReleaseEnvCommand, ReleaseRegistryCommand, SmartWalletMode, StorageDurability, TokenBurnArgs,
-    TokenCommand, TokenCreateArgs, TokenMoveArgs, TokenSacCommand, WalletCommand, WalletPayArgs,
-    WalletSep7Command, WalletSmartCommand,
+    InitArgs, ProjectAddTarget, ProjectCommand, ProjectSmokeArgs, ReleaseAliasesCommand,
+    ReleaseCommand, ReleaseEnvCommand, ReleaseRegistryCommand, ScenarioCommand, ScenarioRunArgs,
+    SmartWalletMode, StorageDurability, TokenBurnArgs, TokenCommand, TokenCreateArgs,
+    TokenMoveArgs, TokenSacCommand, WalletCommand, WalletPayArgs, WalletSep7Command,
+    WalletSmartCommand,
 };
 use crate::model::{
     ApiConfig, ContractConfig, ContractDeployment, FrontendConfig, IdentityConfig, Lockfile,
-    Manifest, ManifestRef, NetworkConfig, TokenConfig, WalletConfig, is_safe_name,
-    parse_manifest_ref,
+    Manifest, ManifestRef, NetworkConfig, ScenarioAssertion, ScenarioConfig, ScenarioStep,
+    TokenConfig, WalletConfig, is_safe_name, parse_manifest_ref,
 };
 use crate::runtime::{AppContext, CommandReport, check, path_to_string, render_command};
 use crate::templates;
@@ -41,14 +43,57 @@ pub fn execute(context: &AppContext, cli: Cli) -> Result<CommandReport> {
         Command::Init(args) => init_command(context, &args),
         Command::Project(args) => project_command(context, args.command),
         Command::Dev(args) => dev_command(context, args.command),
+        Command::Scenario(args) => scenario_command(context, args.command),
         Command::Contract(args) => contract_command(context, args.command),
         Command::Token(args) => token::token_command(context, args.command),
         Command::Wallet(args) => wallet::wallet_command(context, args.command),
         Command::Api(args) => api_command(context, args.command),
         Command::Events(args) => events::events_command(context, args.command),
         Command::Release(args) => release_command(context, args.command),
-        Command::Doctor(args) => doctor_command(context, args.command),
+        Command::Doctor(args) => doctor_command(context, args),
     }
+}
+
+pub(crate) fn persist_report_output(
+    _context: &AppContext,
+    report: &mut CommandReport,
+    path: &Path,
+) -> Result<()> {
+    match report.data.as_mut() {
+        Some(Value::Object(data)) => {
+            data.insert("out".to_string(), json!(path.display().to_string()));
+        }
+        None => {
+            report.data = Some(json!({ "out": path.display().to_string() }));
+        }
+        Some(_) => {}
+    }
+    let rendered = serde_json::to_string_pretty(report)?;
+    if !report
+        .artifacts
+        .iter()
+        .any(|artifact| artifact == &path.display().to_string())
+    {
+        report.artifacts.push(path.display().to_string());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
+    }
+    fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+pub(crate) fn path_check(
+    label: impl Into<String>,
+    path: &Path,
+    missing_status: &str,
+) -> crate::runtime::CheckResult {
+    check(
+        label.into(),
+        if path.exists() { "ok" } else { missing_status },
+        Some(path.display().to_string()),
+    )
 }
 
 fn validate_single_path_segment(label: &str, value: &str) -> Result<()> {
@@ -56,6 +101,20 @@ fn validate_single_path_segment(label: &str, value: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("{label} `{value}` must be a single filesystem-safe name")
+    }
+}
+
+fn supported_package_manager(package_manager: &str) -> bool {
+    matches!(package_manager, "pnpm" | "npm" | "yarn" | "bun")
+}
+
+fn ensure_supported_package_manager(package_manager: &str, action: &str) -> Result<()> {
+    if supported_package_manager(package_manager) {
+        Ok(())
+    } else {
+        bail!(
+            "unsupported `project.package_manager` value `{package_manager}` for `{action}`; use pnpm, npm, yarn, or bun"
+        )
     }
 }
 
@@ -165,6 +224,7 @@ fn init_command(context: &AppContext, args: &InitArgs) -> Result<CommandReport> 
         context.run_command(&mut report, Some(&root), "git", &git_args)?;
     }
     if args.install && !args.no_install {
+        ensure_supported_package_manager(&manifest.project.package_manager, "init --install")?;
         for app_dir in ["apps/api", "apps/web"] {
             let package_json = root.join(app_dir).join("package.json");
             if package_json.exists() {
@@ -201,79 +261,205 @@ fn init_command(context: &AppContext, args: &InitArgs) -> Result<CommandReport> 
 }
 
 fn project_command(context: &AppContext, command: ProjectCommand) -> Result<CommandReport> {
-    match command {
-        ProjectCommand::Info => project_info(context),
-        ProjectCommand::Sync => project_sync(context),
-        ProjectCommand::Validate => project_validate(context),
+    let out = project_command_output_path(&command);
+    let mut report = match command {
+        ProjectCommand::Info(_) => project_info(context),
+        ProjectCommand::Sync(_) => project_sync(context),
+        ProjectCommand::Validate(_) => project_validate(context),
+        ProjectCommand::Smoke(args) => project_smoke(context, &args),
         ProjectCommand::Add(args) => match args.target {
-            ProjectAddTarget::Contract { name, template } => {
+            ProjectAddTarget::Contract { name, template, .. } => {
                 contract_new(context, &name, &template, true)
             }
-            ProjectAddTarget::Api => project_add_api(context),
-            ProjectAddTarget::Frontend { framework } => project_add_frontend(context, &framework),
+            ProjectAddTarget::Api { .. } => project_add_api(context),
+            ProjectAddTarget::Frontend { framework, .. } => {
+                project_add_frontend(context, &framework)
+            }
         },
         ProjectCommand::Adopt(args) => match args.source {
-            crate::cli::ProjectAdoptSource::Scaffold => project_adopt_scaffold(context),
+            crate::cli::ProjectAdoptSource::Scaffold(_) => project_adopt_scaffold(context),
+        },
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn project_command_output_path(command: &ProjectCommand) -> Option<PathBuf> {
+    match command {
+        ProjectCommand::Info(args)
+        | ProjectCommand::Sync(args)
+        | ProjectCommand::Validate(args) => args.out.clone(),
+        ProjectCommand::Smoke(args) => args.out.clone(),
+        ProjectCommand::Add(args) => match &args.target {
+            ProjectAddTarget::Contract { out, .. } => out.clone(),
+            ProjectAddTarget::Api { out } => out.clone(),
+            ProjectAddTarget::Frontend { out, .. } => out.clone(),
+        },
+        ProjectCommand::Adopt(args) => match &args.source {
+            crate::cli::ProjectAdoptSource::Scaffold(args) => args.out.clone(),
         },
     }
 }
 
 fn dev_command(context: &AppContext, command: DevCommand) -> Result<CommandReport> {
-    match command {
-        DevCommand::Up => dev_up(context),
-        DevCommand::Down => dev_down(context),
-        DevCommand::Status => dev_status(context),
-        DevCommand::Reset => dev_reset(context),
-        DevCommand::Reseed => dev_reseed(context),
-        DevCommand::Fund { target } => dev_fund(context, &target),
-        DevCommand::Watch { interval_ms, once } => dev_watch(context, interval_ms, once),
-        DevCommand::Events { resource } => {
+    let out = dev_command_output_path(&command);
+    let mut report = match command {
+        DevCommand::Up(_) => dev_up(context)?,
+        DevCommand::Down(_) => dev_down(context)?,
+        DevCommand::Status(_) => dev_status(context)?,
+        DevCommand::Reset(_) => dev_reset(context)?,
+        DevCommand::Reseed(_) => dev_reseed(context)?,
+        DevCommand::Snapshot(args) => match args.command {
+            DevSnapshotCommand::Save(args) => dev_snapshot_save(context, &args)?,
+            DevSnapshotCommand::Load(args) => dev_snapshot_load(context, &args)?,
+        },
+        DevCommand::Fund(args) => dev_fund(context, &args.target)?,
+        DevCommand::Watch(args) => dev_watch(context, args.interval_ms, args.once)?,
+        DevCommand::Events(args) => {
             let mut report = CommandReport::new("dev.events");
             report.message = Some(
                 "use `stellar forge events watch` for resource-specific event streaming"
                     .to_string(),
             );
-            report.data = Some(json!({ "resource": resource }));
-            Ok(report)
+            report.data = Some(json!({ "resource": args.resource }));
+            report
         }
-        DevCommand::Logs => dev_logs(context),
+        DevCommand::Logs(_) => dev_logs(context)?,
+    };
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn dev_command_output_path(command: &DevCommand) -> Option<PathBuf> {
+    match command {
+        DevCommand::Up(args)
+        | DevCommand::Down(args)
+        | DevCommand::Status(args)
+        | DevCommand::Reset(args)
+        | DevCommand::Reseed(args)
+        | DevCommand::Logs(args) => args.out.clone(),
+        DevCommand::Snapshot(args) => match &args.command {
+            DevSnapshotCommand::Save(args) => args.out.clone(),
+            DevSnapshotCommand::Load(args) => args.out.clone(),
+        },
+        DevCommand::Fund(args) => args.out.clone(),
+        DevCommand::Watch(args) => args.out.clone(),
+        DevCommand::Events(args) => args.out.clone(),
+    }
+}
+
+fn scenario_command(context: &AppContext, command: ScenarioCommand) -> Result<CommandReport> {
+    let out = scenario_command_output_path(&command);
+    let mut report = match command {
+        ScenarioCommand::Run(args) => scenario_execute(context, &args, false)?,
+        ScenarioCommand::Test(args) => scenario_execute(context, &args, true)?,
+    };
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn scenario_command_output_path(command: &ScenarioCommand) -> Option<PathBuf> {
+    match command {
+        ScenarioCommand::Run(args) | ScenarioCommand::Test(args) => args.out.clone(),
     }
 }
 
 fn contract_command(context: &AppContext, command: ContractCommand) -> Result<CommandReport> {
-    match command {
-        ContractCommand::New { name, template } => contract_new(context, &name, &template, false),
-        ContractCommand::Build { name, optimize } => {
+    let out = contract_command_output_path(&command);
+    let mut report = match command {
+        ContractCommand::New { name, template, .. } => {
+            contract_new(context, &name, &template, false)
+        }
+        ContractCommand::Build { name, optimize, .. } => {
             contract_build(context, name.as_deref(), optimize)
         }
-        ContractCommand::Deploy { name, env } => contract_deploy(context, &name, env.as_deref()),
+        ContractCommand::Format(args) => contract_format(context, args.name.as_deref(), args.check),
+        ContractCommand::Lint(args) => contract_lint(context, args.name.as_deref()),
+        ContractCommand::Deploy { name, env, .. } => {
+            contract_deploy(context, &name, env.as_deref())
+        }
         ContractCommand::Call(args) => contract_call(context, &args),
-        ContractCommand::Bind { contract, langs } => contract_bind(context, &contract, &langs),
-        ContractCommand::Info { contract } => contract_info(context, &contract),
+        ContractCommand::Bind {
+            contract, langs, ..
+        } => contract_bind(context, &contract, &langs),
+        ContractCommand::Info { contract, .. } => contract_info(context, &contract),
         ContractCommand::Fetch { contract, out } => contract_fetch(context, &contract, out),
         ContractCommand::Ttl(args) => match args.command {
             crate::cli::ContractTtlCommand::Extend(args) => contract_ttl(context, &args, false),
             crate::cli::ContractTtlCommand::Restore(args) => contract_ttl(context, &args, true),
         },
-        ContractCommand::Spec { contract } => contract_spec(context, &contract),
+        ContractCommand::Spec(args) => contract_spec(context, &args.contract),
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn contract_command_output_path(command: &ContractCommand) -> Option<PathBuf> {
+    match command {
+        ContractCommand::New { out, .. } => out.clone(),
+        ContractCommand::Build { out, .. } => out.clone(),
+        ContractCommand::Format(args) => args.out.clone(),
+        ContractCommand::Lint(args) => args.out.clone(),
+        ContractCommand::Deploy { out, .. } => out.clone(),
+        ContractCommand::Call(args) => args.out.clone(),
+        ContractCommand::Bind { out, .. } => out.clone(),
+        ContractCommand::Info { out, .. } => out.clone(),
+        ContractCommand::Fetch { .. } => None,
+        ContractCommand::Ttl(args) => match &args.command {
+            crate::cli::ContractTtlCommand::Extend(args)
+            | crate::cli::ContractTtlCommand::Restore(args) => args.out.clone(),
+        },
+        ContractCommand::Spec(args) => args.out.clone(),
     }
 }
 
 fn api_command(context: &AppContext, command: ApiCommand) -> Result<CommandReport> {
-    match command {
-        ApiCommand::Init => api_init(context),
+    let out = api_command_output_path(&command);
+    let mut report = match command {
+        ApiCommand::Init(_) => api_init(context),
         ApiCommand::Generate(args) => match args.target {
-            ApiGenerateTarget::Contract { name } => api_generate_contract(context, &name),
-            ApiGenerateTarget::Token { name } => api_generate_token(context, &name),
+            ApiGenerateTarget::Contract { name, .. } => api_generate_contract(context, &name),
+            ApiGenerateTarget::Token { name, .. } => api_generate_token(context, &name),
         },
         ApiCommand::Openapi(args) => match args.command {
-            ApiOpenapiCommand::Export => api_openapi_export(context),
+            ApiOpenapiCommand::Export(_) => api_openapi_export(context),
         },
         ApiCommand::Events(args) => match args.command {
-            ApiEventsCommand::Init => api_events_init(context),
+            ApiEventsCommand::Init(_) => api_events_init(context),
         },
         ApiCommand::Relayer(args) => match args.command {
-            ApiRelayerCommand::Init => api_relayer_init(context),
+            ApiRelayerCommand::Init(_) => api_relayer_init(context),
+        },
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
+    }
+    Ok(report)
+}
+
+fn api_command_output_path(command: &ApiCommand) -> Option<PathBuf> {
+    match command {
+        ApiCommand::Init(args) => args.out.clone(),
+        ApiCommand::Generate(args) => match &args.target {
+            ApiGenerateTarget::Contract { out, .. } => out.clone(),
+            ApiGenerateTarget::Token { out, .. } => out.clone(),
+        },
+        ApiCommand::Openapi(args) => match &args.command {
+            ApiOpenapiCommand::Export(args) => args.out.clone(),
+        },
+        ApiCommand::Events(args) => match &args.command {
+            ApiEventsCommand::Init(args) => args.out.clone(),
+        },
+        ApiCommand::Relayer(args) => match &args.command {
+            ApiRelayerCommand::Init(args) => args.out.clone(),
         },
     }
 }
@@ -282,8 +468,8 @@ fn release_command(context: &AppContext, command: ReleaseCommand) -> Result<Comm
     release::release_command(context, command)
 }
 
-fn doctor_command(context: &AppContext, command: Option<DoctorCommand>) -> Result<CommandReport> {
-    doctor::doctor_command(context, command)
+fn doctor_command(context: &AppContext, args: DoctorArgs) -> Result<CommandReport> {
+    doctor::doctor_command(context, args)
 }
 
 fn project_info(context: &AppContext) -> Result<CommandReport> {
@@ -322,6 +508,7 @@ fn project_info(context: &AppContext) -> Result<CommandReport> {
         "api": manifest.api,
         "frontend": manifest.frontend,
         "release": manifest.release,
+        "scenarios": manifest.scenarios,
         "deployment": lockfile.environments,
         "compatibility": compatibility,
     }));
@@ -380,6 +567,94 @@ fn project_validate(context: &AppContext) -> Result<CommandReport> {
     let report = doctor::project_validation_report(context)?;
     if report.status == "error" && !context.globals.json {
         bail!(doctor::project_validation_failure_message(&report));
+    }
+    Ok(report)
+}
+
+fn project_smoke(context: &AppContext, args: &ProjectSmokeArgs) -> Result<CommandReport> {
+    let mut report = CommandReport::new("project.smoke");
+    let manifest = load_manifest(context)?;
+    if !manifest
+        .frontend
+        .as_ref()
+        .is_some_and(|frontend| frontend.enabled)
+    {
+        bail!(
+            "frontend scaffold is not enabled in the manifest; run `stellar forge project add frontend` first"
+        );
+    }
+
+    let root = context.project_root();
+    let web_root = root.join("apps/web");
+    for path in [
+        web_root.join("package.json"),
+        web_root.join("index.html"),
+        web_root.join("src/main.tsx"),
+        web_root.join("src/generated/stellar.ts"),
+        web_root.join("scripts/ui-smoke.mjs"),
+        web_root.join("scripts/ui-browser-smoke.mjs"),
+    ] {
+        if !path.exists() {
+            bail!(
+                "frontend scaffold is incomplete; missing `{}`. Run `stellar forge project sync` to regenerate apps/web",
+                path.display()
+            );
+        }
+    }
+
+    let package_manager = project_package_manager(&manifest, &root);
+    ensure_supported_package_manager(&package_manager, "project smoke")?;
+    if !context.command_exists(&package_manager) {
+        bail!(
+            "package manager `{package_manager}` is not available on PATH; install it or update `project.package_manager`"
+        );
+    }
+
+    if args.install {
+        context.run_command(
+            &mut report,
+            Some(&root),
+            &package_manager,
+            &package_manager_install_args(&package_manager, "apps/web"),
+        )?;
+    }
+    let smoke_script = if args.browser {
+        "smoke:browser"
+    } else {
+        "smoke:ui"
+    };
+    context.run_command(
+        &mut report,
+        Some(&root),
+        &package_manager,
+        &package_manager_script_args(&package_manager, "apps/web", smoke_script),
+    )?;
+
+    report.message = Some(if context.globals.dry_run {
+        format!(
+            "frontend {smoke_script} runner prepared for `{}`",
+            manifest.project.slug
+        )
+    } else {
+        format!(
+            "frontend {smoke_script} runner passed for `{}`",
+            manifest.project.slug
+        )
+    });
+    report.next = vec![
+        package_manager_dev_command(&package_manager, "apps/web"),
+        "stellar forge doctor project".to_string(),
+    ];
+    report.data = Some(json!({
+        "project": manifest.project.slug,
+        "package_manager": package_manager,
+        "frontend_root": web_root.display().to_string(),
+        "runner": web_root.join(format!("scripts/{}.mjs", if args.browser { "ui-browser-smoke" } else { "ui-smoke" })).display().to_string(),
+        "install": args.install,
+        "browser": args.browser,
+    }));
+    if let Some(path) = args.out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
     }
     Ok(report)
 }
@@ -608,22 +883,70 @@ fn detect_package_manager(root: &Path) -> Option<String> {
     .find_map(|(file, manager)| root.join(file).exists().then(|| manager.to_string()))
 }
 
-fn package_manager_install_command(package_manager: &str, dir: &str) -> String {
-    match package_manager {
-        "npm" => format!("npm install --prefix {dir}"),
-        "yarn" => format!("yarn --cwd {dir} install"),
-        "bun" => format!("bun --cwd {dir} install"),
-        _ => format!("pnpm --dir {dir} install"),
+fn project_package_manager(manifest: &Manifest, root: &Path) -> String {
+    if manifest.project.package_manager.trim().is_empty() {
+        detect_package_manager(root).unwrap_or_else(|| "pnpm".to_string())
+    } else {
+        manifest.project.package_manager.clone()
     }
 }
 
-fn package_manager_dev_command(package_manager: &str, dir: &str) -> String {
+fn package_manager_install_args(package_manager: &str, dir: &str) -> Vec<String> {
     match package_manager {
-        "npm" => format!("npm run dev --prefix {dir}"),
-        "yarn" => format!("yarn --cwd {dir} dev"),
-        "bun" => format!("bun --cwd {dir} run dev"),
-        _ => format!("pnpm --dir {dir} dev"),
+        "npm" => vec![
+            "--prefix".to_string(),
+            dir.to_string(),
+            "install".to_string(),
+        ],
+        "yarn" => vec!["--cwd".to_string(), dir.to_string(), "install".to_string()],
+        "bun" => vec!["--cwd".to_string(), dir.to_string(), "install".to_string()],
+        _ => vec!["--dir".to_string(), dir.to_string(), "install".to_string()],
     }
+}
+
+fn package_manager_script_args(package_manager: &str, dir: &str, script: &str) -> Vec<String> {
+    match package_manager {
+        "npm" => vec![
+            "--prefix".to_string(),
+            dir.to_string(),
+            "run".to_string(),
+            script.to_string(),
+        ],
+        "yarn" => vec!["--cwd".to_string(), dir.to_string(), script.to_string()],
+        "bun" => vec![
+            "--cwd".to_string(),
+            dir.to_string(),
+            "run".to_string(),
+            script.to_string(),
+        ],
+        _ => vec!["--dir".to_string(), dir.to_string(), script.to_string()],
+    }
+}
+
+fn package_manager_install_command(package_manager: &str, dir: &str) -> String {
+    render_command(
+        package_manager,
+        &package_manager_install_args(package_manager, dir),
+    )
+}
+
+fn package_manager_script_command(package_manager: &str, dir: &str, script: &str) -> String {
+    render_command(
+        package_manager,
+        &package_manager_script_args(package_manager, dir, script),
+    )
+}
+
+fn package_manager_dev_command(package_manager: &str, dir: &str) -> String {
+    package_manager_script_command(package_manager, dir, "dev")
+}
+
+fn package_manager_smoke_command(package_manager: &str, dir: &str) -> String {
+    package_manager_script_command(package_manager, dir, "smoke:ui")
+}
+
+fn package_manager_browser_smoke_command(package_manager: &str, dir: &str) -> String {
+    package_manager_script_command(package_manager, dir, "smoke:browser")
 }
 
 fn api_app_next_steps(package_manager: &str) -> Vec<String> {
@@ -637,6 +960,8 @@ fn frontend_app_next_steps(package_manager: &str) -> Vec<String> {
     vec![
         package_manager_install_command(package_manager, "apps/web"),
         package_manager_dev_command(package_manager, "apps/web"),
+        package_manager_smoke_command(package_manager, "apps/web"),
+        package_manager_browser_smoke_command(package_manager, "apps/web"),
     ]
 }
 
@@ -1417,6 +1742,702 @@ fn dev_logs(context: &AppContext) -> Result<CommandReport> {
     Ok(report)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DevSnapshotDocument {
+    version: u32,
+    name: String,
+    saved_at: String,
+    project: DevSnapshotProject,
+    network: String,
+    lockfile: Lockfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    env_generated: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deploy_artifact: Option<Value>,
+    event_cursors: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DevSnapshotProject {
+    slug: String,
+    version: String,
+    manifest_digest: String,
+}
+
+fn dev_snapshot_save(context: &AppContext, args: &DevSnapshotSaveArgs) -> Result<CommandReport> {
+    let mut report = CommandReport::new("dev.snapshot.save");
+    let manifest = load_manifest(context)?;
+    let env = manifest
+        .active_network(context.globals.network.as_deref())?
+        .0
+        .to_string();
+    let name = dev_snapshot_name(args.name.as_deref())?;
+    let path = dev_snapshot_path(context, &env, args.name.as_deref(), args.path.as_deref())?;
+    let root = context.project_root();
+    let env_generated_path = root.join(".env.generated");
+    let deploy_path = release::release_artifact_path(&root, &env);
+    let env_generated = if env_generated_path.exists() {
+        Some(context.read_text(&env_generated_path)?)
+    } else {
+        None
+    };
+    let deploy_artifact = if deploy_path.exists() {
+        Some(serde_json::from_str(&context.read_text(&deploy_path)?)?)
+    } else {
+        None
+    };
+    let event_cursors = normalize_event_cursors_value(load_event_cursors(&root)?);
+    let snapshot = DevSnapshotDocument {
+        version: 1,
+        name: name.clone(),
+        saved_at: Utc::now().to_rfc3339(),
+        project: DevSnapshotProject {
+            slug: manifest.project.slug.clone(),
+            version: manifest.project.version.clone(),
+            manifest_digest: manifest_digest(context)?,
+        },
+        network: env.clone(),
+        lockfile: load_lockfile(context)?,
+        env_generated,
+        deploy_artifact,
+        event_cursors: event_cursors.clone(),
+    };
+    let rendered = serde_json::to_string_pretty(&snapshot)?;
+    let archived = if args.path.is_none() {
+        archive_existing_dev_snapshot(context, &mut report, &root, &env, &name, &path, &rendered)?
+    } else {
+        None
+    };
+    context.write_text(&mut report, &path, &rendered)?;
+    report.network = Some(env.clone());
+    report.message = Some(format!("development snapshot `{name}` saved for `{env}`"));
+    report.next = vec![format!(
+        "stellar forge dev snapshot load {}",
+        args.name.as_deref().unwrap_or("default")
+    )];
+    report.data = Some(json!({
+        "name": name,
+        "path": path.display().to_string(),
+        "network": env,
+        "files": {
+            "lockfile": root.join("stellarforge.lock.json").display().to_string(),
+            "env_generated": env_generated_path.display().to_string(),
+            "deploy_artifact": deploy_path.display().to_string(),
+            "event_cursors": root.join("workers/events/cursors.json").display().to_string(),
+        },
+        "captured": {
+            "env_generated": snapshot.env_generated.is_some(),
+            "deploy_artifact": snapshot.deploy_artifact.is_some(),
+            "event_cursor_count": event_cursors
+                .get("cursors")
+                .and_then(Value::as_object)
+                .map(|cursors| cursors.len())
+                .unwrap_or(0),
+        },
+        "archived_previous": archived.as_ref().map(|path| path.display().to_string()),
+    }));
+    Ok(report)
+}
+
+fn dev_snapshot_load(context: &AppContext, args: &DevSnapshotLoadArgs) -> Result<CommandReport> {
+    let mut report = CommandReport::new("dev.snapshot.load");
+    let manifest = load_manifest(context)?;
+    let env = manifest
+        .active_network(context.globals.network.as_deref())?
+        .0
+        .to_string();
+    let name = dev_snapshot_name(args.name.as_deref())?;
+    let (path, source_kind) =
+        resolve_dev_snapshot_load_path(context, &env, args.name.as_deref(), args.path.as_deref())?;
+    let snapshot: DevSnapshotDocument = serde_json::from_str(&context.read_text(&path)?)
+        .with_context(|| format!("failed to parse snapshot `{}`", path.display()))?;
+    if snapshot.version != 1 {
+        bail!(
+            "unsupported snapshot version `{}` in `{}`",
+            snapshot.version,
+            path.display()
+        );
+    }
+    if snapshot.project.slug != manifest.project.slug {
+        bail!(
+            "snapshot `{}` belongs to project `{}` but the current manifest slug is `{}`",
+            path.display(),
+            snapshot.project.slug,
+            manifest.project.slug
+        );
+    }
+    let current_digest = manifest_digest(context)?;
+    if snapshot.project.manifest_digest != current_digest {
+        bail!(
+            "snapshot `{}` was saved for a different manifest version; expected digest `{}`, found `{}`",
+            path.display(),
+            current_digest,
+            snapshot.project.manifest_digest
+        );
+    }
+    let root = context.project_root();
+    let deploy_path = release::release_artifact_path(&root, &env);
+    let event_cursor_path = root.join("workers/events/cursors.json");
+    save_lockfile(context, &mut report, &snapshot.lockfile)?;
+    match snapshot.env_generated.as_deref() {
+        Some(env_generated) => {
+            context.write_text(&mut report, &root.join(".env.generated"), env_generated)?;
+        }
+        None => {
+            remove_file_if_exists(context, &mut report, &root.join(".env.generated"))?;
+        }
+    }
+    match snapshot.deploy_artifact.as_ref() {
+        Some(deploy_artifact) => context.write_text(
+            &mut report,
+            &deploy_path,
+            &serde_json::to_string_pretty(deploy_artifact)?,
+        )?,
+        None => {
+            remove_file_if_exists(context, &mut report, &deploy_path)?;
+        }
+    }
+    context.write_text(
+        &mut report,
+        &event_cursor_path,
+        &serde_json::to_string_pretty(&normalize_event_cursors_value(
+            snapshot.event_cursors.clone(),
+        ))?,
+    )?;
+    if manifest
+        .frontend
+        .as_ref()
+        .is_some_and(|frontend| frontend.enabled)
+    {
+        sync_frontend_generated_state(context, &mut report, &root, &manifest, &env)?;
+    }
+    report.network = Some(env.clone());
+    report.message = Some(format!(
+        "development snapshot `{name}` restored for `{env}`"
+    ));
+    report.next = vec![
+        format!("stellar forge release verify {env}"),
+        format!("stellar forge events status"),
+    ];
+    report.data = Some(json!({
+        "name": name,
+        "path": path.display().to_string(),
+        "network": env,
+        "source": source_kind,
+        "restored": {
+            "lockfile": root.join("stellarforge.lock.json").display().to_string(),
+            "env_generated": root.join(".env.generated").display().to_string(),
+            "deploy_artifact": deploy_path.display().to_string(),
+            "event_cursors": event_cursor_path.display().to_string(),
+            "frontend_generated_state": manifest.frontend.as_ref().is_some_and(|frontend| frontend.enabled)
+                .then(|| root.join("apps/web/src/generated/stellar.ts").display().to_string()),
+        },
+    }));
+    Ok(report)
+}
+
+fn resolve_dev_snapshot_load_path(
+    context: &AppContext,
+    env: &str,
+    name: Option<&str>,
+    override_path: Option<&Path>,
+) -> Result<(PathBuf, &'static str)> {
+    if let Some(path) = override_path {
+        return Ok((
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                context.project_root().join(path)
+            },
+            "explicit",
+        ));
+    }
+    let current = dev_snapshot_path(context, env, name, None)?;
+    if current.exists() {
+        return Ok((current, "current"));
+    }
+    let name = dev_snapshot_name(name)?;
+    Ok((
+        latest_dev_snapshot_history_artifact(&context.project_root(), env, &name)?,
+        "history",
+    ))
+}
+
+fn dev_snapshot_name(name: Option<&str>) -> Result<String> {
+    let value = name.unwrap_or("default");
+    validate_single_path_segment("snapshot name", value)?;
+    Ok(value.to_string())
+}
+
+fn dev_snapshot_path(
+    context: &AppContext,
+    env: &str,
+    name: Option<&str>,
+    override_path: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return Ok(if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            context.project_root().join(path)
+        });
+    }
+    let name = dev_snapshot_name(name)?;
+    Ok(context
+        .project_root()
+        .join("dist")
+        .join("snapshots")
+        .join(format!("dev.{env}.{name}.json")))
+}
+
+fn dev_snapshot_history_dir(root: &Path) -> PathBuf {
+    root.join("dist").join("snapshots").join("history")
+}
+
+fn dev_snapshot_history_artifact_path(root: &Path, env: &str, name: &str) -> PathBuf {
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    dev_snapshot_history_dir(root).join(format!("dev.{env}.{name}.{timestamp}.json"))
+}
+
+fn archive_existing_dev_snapshot(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    env: &str,
+    name: &str,
+    current_path: &Path,
+    new_contents: &str,
+) -> Result<Option<PathBuf>> {
+    let Ok(existing) = fs::read_to_string(current_path) else {
+        return Ok(None);
+    };
+    if existing == new_contents {
+        return Ok(None);
+    }
+    let archive_path = dev_snapshot_history_artifact_path(root, env, name);
+    context.write_text(report, &archive_path, &existing)?;
+    Ok(Some(archive_path))
+}
+
+fn latest_dev_snapshot_history_artifact(root: &Path, env: &str, name: &str) -> Result<PathBuf> {
+    let mut candidates = dev_snapshot_history_artifacts(root, env, name)?;
+    candidates.pop().ok_or_else(|| {
+        anyhow!(
+            "no development snapshot history found for `{name}` in `{env}`; save a snapshot first or pass `--path <artifact>`"
+        )
+    })
+}
+
+fn dev_snapshot_history_artifacts(root: &Path, env: &str, name: &str) -> Result<Vec<PathBuf>> {
+    let history_dir = dev_snapshot_history_dir(root);
+    let prefix = format!("dev.{env}.{name}.");
+    let entries = match fs::read_dir(&history_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read development snapshot history directory {}",
+                    history_dir.display()
+                )
+            });
+        }
+    };
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|file_name| {
+                    file_name.starts_with(&prefix) && file_name.ends_with(".json")
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    Ok(candidates)
+}
+
+fn manifest_digest(context: &AppContext) -> Result<String> {
+    let manifest_bytes = fs::read(&context.manifest_path)
+        .with_context(|| format!("failed to read {}", context.manifest_path.display()))?;
+    let digest = Sha256::digest(&manifest_bytes);
+    Ok(format!("sha256:{:x}", digest))
+}
+
+fn normalize_event_cursors_value(value: Value) -> Value {
+    if value.get("cursors").is_some() {
+        value
+    } else {
+        json!({ "cursors": {} })
+    }
+}
+
+fn remove_file_if_exists(
+    context: &AppContext,
+    report: &mut CommandReport,
+    path: &Path,
+) -> Result<bool> {
+    report.artifacts.push(path.display().to_string());
+    if context.globals.dry_run {
+        return Ok(path.exists());
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+fn scenario_execute(
+    context: &AppContext,
+    args: &ScenarioRunArgs,
+    test_mode: bool,
+) -> Result<CommandReport> {
+    let manifest = load_manifest(context)?;
+    let scenario = manifest
+        .scenarios
+        .get(&args.name)
+        .cloned()
+        .ok_or_else(|| anyhow!("scenario `{}` is not declared in the manifest", args.name))?;
+    let scenario_context = scenario_context(context, &manifest, &scenario, test_mode)?;
+    let effective_network = scenario_context
+        .globals
+        .network
+        .clone()
+        .unwrap_or_else(|| manifest.defaults.network.clone());
+    let effective_identity = scenario_context
+        .globals
+        .identity
+        .clone()
+        .unwrap_or_else(|| manifest.defaults.identity.clone());
+    let mut report = CommandReport::new(if test_mode {
+        "scenario.test"
+    } else {
+        "scenario.run"
+    });
+    report.network = Some(effective_network.clone());
+    let mut steps = Vec::new();
+    let mut step_reports = Vec::new();
+    for (index, step) in scenario.steps.iter().enumerate() {
+        let child = scenario_step_execute(&scenario_context, step)?;
+        report.commands.extend(child.commands.clone());
+        report.artifacts.extend(child.artifacts.clone());
+        report.warnings.extend(child.warnings.clone());
+        report.checks.push(check(
+            format!(
+                "scenario:{}:step:{}:{}",
+                args.name,
+                index + 1,
+                scenario_step_action(step)
+            ),
+            child.status.clone(),
+            child.message.clone(),
+        ));
+        let step_report = child.clone();
+        steps.push(json!({
+            "index": index + 1,
+            "action": scenario_step_action(step),
+            "status": step_report.status,
+            "message": step_report.message,
+            "warnings": step_report.warnings,
+            "checks": step_report.checks,
+            "commands": step_report.commands,
+            "artifacts": step_report.artifacts,
+            "next": step_report.next,
+            "data": step_report.data,
+        }));
+        step_reports.push(child);
+    }
+    let assertion_results = if test_mode {
+        evaluate_scenario_assertions(&args.name, &scenario.assertions, &step_reports)?
+    } else {
+        Vec::new()
+    };
+    for (check_result, _) in &assertion_results {
+        report.checks.push(check_result.clone());
+    }
+    report.status = aggregate_status(&report.checks);
+    report.message = Some(if test_mode {
+        if scenario.assertions.is_empty() {
+            format!("scenario `{}` validated in preview mode", args.name)
+        } else {
+            format!(
+                "scenario `{}` validated in preview mode with {} assertion(s)",
+                args.name,
+                scenario.assertions.len()
+            )
+        }
+    } else {
+        format!("scenario `{}` executed", args.name)
+    });
+    report.next = vec![format!(
+        "stellar forge scenario {} {}",
+        if test_mode { "run" } else { "test" },
+        args.name
+    )];
+    report.data = Some(json!({
+        "name": args.name,
+        "description": scenario.description,
+        "mode": if test_mode { "test" } else { "run" },
+        "network": effective_network,
+        "identity": effective_identity,
+        "step_count": steps.len(),
+        "steps": steps,
+        "assertions": if test_mode {
+            Some(assertion_results.into_iter().map(|(_, value)| value).collect::<Vec<_>>())
+        } else {
+            None::<Vec<Value>>
+        },
+    }));
+    Ok(report)
+}
+
+fn scenario_context(
+    context: &AppContext,
+    manifest: &Manifest,
+    scenario: &ScenarioConfig,
+    test_mode: bool,
+) -> Result<AppContext> {
+    let mut globals = context.globals.clone();
+    globals.cwd = Some(context.cwd.clone());
+    globals.manifest = Some(context.manifest_path.clone());
+    if globals.network.is_none() {
+        globals.network = scenario
+            .network
+            .clone()
+            .or_else(|| Some(manifest.defaults.network.clone()));
+    }
+    if globals.identity.is_none() {
+        globals.identity = scenario
+            .identity
+            .clone()
+            .or_else(|| Some(manifest.defaults.identity.clone()));
+    }
+    if test_mode {
+        globals.dry_run = true;
+    }
+    AppContext::from_globals(&globals)
+}
+
+fn scenario_step_execute(context: &AppContext, step: &ScenarioStep) -> Result<CommandReport> {
+    match step {
+        ScenarioStep::ProjectValidate => project_validate(context),
+        ScenarioStep::ProjectSync => project_sync(context),
+        ScenarioStep::DevUp => dev_up(context),
+        ScenarioStep::DevReseed => dev_reseed(context),
+        ScenarioStep::DevFund { target } => dev_fund(context, target),
+        ScenarioStep::ContractBuild { contract, optimize } => {
+            contract_build(context, contract.as_deref(), *optimize)
+        }
+        ScenarioStep::ContractDeploy { contract, env } => {
+            contract_deploy(context, contract, env.as_deref())
+        }
+        ScenarioStep::ContractCall {
+            contract,
+            function,
+            send,
+            build_only,
+            args,
+        } => contract_call(
+            context,
+            &ContractCallArgs {
+                contract: contract.clone(),
+                function: function.clone(),
+                send: send.clone().unwrap_or_else(|| "default".to_string()),
+                build_only: *build_only,
+                out: None,
+                args: args.clone(),
+            },
+        ),
+        ScenarioStep::TokenMint {
+            token,
+            to,
+            amount,
+            from,
+        } => token::token_command(
+            context,
+            TokenCommand::Mint(TokenMoveArgs {
+                name: token.clone(),
+                to: to.clone(),
+                amount: amount.clone(),
+                from: from.clone(),
+                out: None,
+            }),
+        ),
+        ScenarioStep::WalletPay {
+            from,
+            to,
+            asset,
+            amount,
+            sep7,
+            build_only,
+            relayer,
+        } => wallet::wallet_command(
+            context,
+            WalletCommand::Pay(WalletPayArgs {
+                from: from.clone(),
+                to: to.clone(),
+                asset: asset.clone(),
+                amount: amount.clone(),
+                sep7: *sep7,
+                build_only: *build_only,
+                relayer: *relayer,
+                out: None,
+            }),
+        ),
+        ScenarioStep::ReleasePlan { env } => release::release_command(
+            context,
+            ReleaseCommand::Plan {
+                env: scenario_step_env(context, env.as_deref())?,
+                out: None,
+            },
+        ),
+        ScenarioStep::ReleaseVerify { env } => release::release_command(
+            context,
+            ReleaseCommand::Verify {
+                env: scenario_step_env(context, env.as_deref())?,
+                out: None,
+            },
+        ),
+    }
+}
+
+fn scenario_step_action(step: &ScenarioStep) -> &'static str {
+    match step {
+        ScenarioStep::ProjectValidate => "project.validate",
+        ScenarioStep::ProjectSync => "project.sync",
+        ScenarioStep::DevUp => "dev.up",
+        ScenarioStep::DevReseed => "dev.reseed",
+        ScenarioStep::DevFund { .. } => "dev.fund",
+        ScenarioStep::ContractBuild { .. } => "contract.build",
+        ScenarioStep::ContractDeploy { .. } => "contract.deploy",
+        ScenarioStep::ContractCall { .. } => "contract.call",
+        ScenarioStep::TokenMint { .. } => "token.mint",
+        ScenarioStep::WalletPay { .. } => "wallet.pay",
+        ScenarioStep::ReleasePlan { .. } => "release.plan",
+        ScenarioStep::ReleaseVerify { .. } => "release.verify",
+    }
+}
+
+fn scenario_step_env(context: &AppContext, env: Option<&str>) -> Result<String> {
+    if let Some(env) = env {
+        return Ok(env.to_string());
+    }
+    let manifest = load_manifest(context)?;
+    Ok(context
+        .globals
+        .network
+        .clone()
+        .unwrap_or_else(|| manifest.defaults.network.clone()))
+}
+
+fn evaluate_scenario_assertions(
+    scenario_name: &str,
+    assertions: &[ScenarioAssertion],
+    step_reports: &[CommandReport],
+) -> Result<Vec<(crate::runtime::CheckResult, Value)>> {
+    let overall_status = step_reports
+        .iter()
+        .map(|report| check("scenario", report.status.clone(), None::<String>))
+        .collect::<Vec<_>>();
+    let actual_scenario_status = aggregate_status(&overall_status);
+    let mut results = Vec::new();
+    for (index, assertion) in assertions.iter().enumerate() {
+        let mut issues = Vec::new();
+        let actual = match assertion {
+            ScenarioAssertion::Status { status } => {
+                if &actual_scenario_status != status {
+                    issues.push(format!(
+                        "expected scenario status `{status}` but got `{actual_scenario_status}`"
+                    ));
+                }
+                json!({ "status": actual_scenario_status })
+            }
+            ScenarioAssertion::Step {
+                step,
+                status,
+                command_contains,
+                artifact_contains,
+                warning_contains,
+            } => {
+                let report = step_reports.get(step.saturating_sub(1)).ok_or_else(|| {
+                    anyhow!("scenario `{scenario_name}` assertion references missing step `{step}`")
+                })?;
+                if let Some(status) = status
+                    && &report.status != status
+                {
+                    issues.push(format!(
+                        "expected step `{step}` status `{status}` but got `{}`",
+                        report.status
+                    ));
+                }
+                for needle in command_contains {
+                    if !report
+                        .commands
+                        .iter()
+                        .any(|command| command.contains(needle))
+                    {
+                        issues.push(format!(
+                            "expected step `{step}` commands to contain `{needle}`"
+                        ));
+                    }
+                }
+                for needle in artifact_contains {
+                    if !report
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.contains(needle))
+                    {
+                        issues.push(format!(
+                            "expected step `{step}` artifacts to contain `{needle}`"
+                        ));
+                    }
+                }
+                for needle in warning_contains {
+                    if !report
+                        .warnings
+                        .iter()
+                        .any(|warning| warning.contains(needle))
+                    {
+                        issues.push(format!(
+                            "expected step `{step}` warnings to contain `{needle}`"
+                        ));
+                    }
+                }
+                json!({
+                    "step": step,
+                    "status": report.status,
+                    "commands": report.commands,
+                    "artifacts": report.artifacts,
+                    "warnings": report.warnings,
+                })
+            }
+        };
+        let check_result = check(
+            format!("scenario:{scenario_name}:assertion:{}", index + 1),
+            if issues.is_empty() { "ok" } else { "error" },
+            Some(if issues.is_empty() {
+                "assertion matched".to_string()
+            } else {
+                issues.join("; ")
+            }),
+        );
+        let configured = serde_json::to_value(assertion)?;
+        results.push((
+            check_result,
+            json!({
+                "index": index + 1,
+                "configured": configured,
+                "status": if issues.is_empty() { "ok" } else { "error" },
+                "issues": issues,
+                "actual": actual,
+            }),
+        ));
+    }
+    Ok(results)
+}
+
 fn refresh_watch_api_scaffold(
     context: &AppContext,
     report: &mut CommandReport,
@@ -1599,7 +2620,7 @@ fn contract_new(
         write_contract_stub(context, &mut report, &root, name, template)?;
         report
             .warnings
-            .push("stellar CLI not available, wrote a local contract stub instead".to_string());
+            .push("stellar CLI not available, wrote a local contract scaffold instead".to_string());
     }
     save_manifest(context, &mut report, &manifest)?;
     let mut synced_modules = Vec::new();
@@ -1689,6 +2710,104 @@ fn contract_build(
     }
     report.message = Some("contracts built via the Stellar CLI".to_string());
     report.data = Some(json!({ "contracts": built }));
+    Ok(report)
+}
+
+fn contract_format(
+    context: &AppContext,
+    name: Option<&str>,
+    check_only: bool,
+) -> Result<CommandReport> {
+    let mut report = CommandReport::new("contract.format");
+    if !context.globals.dry_run && !context.command_exists("cargo") {
+        bail!("cargo is required for `contract format` but was not found on PATH");
+    }
+    let manifest = load_manifest(context)?;
+    let contracts: Vec<String> = match name {
+        Some(name) => vec![name.to_string()],
+        None => manifest.contracts.keys().cloned().collect(),
+    };
+    if contracts.is_empty() {
+        bail!("no contracts defined in the manifest");
+    }
+
+    let mut formatted = Vec::new();
+    for contract_name in contracts {
+        let contract = manifest
+            .contracts
+            .get(&contract_name)
+            .ok_or_else(|| anyhow!("contract `{contract_name}` not found"))?;
+        let contract_dir = context.project_root().join(&contract.path);
+        let mut args = vec!["fmt".to_string(), "--all".to_string()];
+        if check_only {
+            args.push("--check".to_string());
+        }
+        context.run_command(&mut report, Some(&contract_dir), "cargo", &args)?;
+        formatted.push(json!({
+            "name": contract_name,
+            "path": contract_dir.display().to_string(),
+        }));
+    }
+
+    report.message = Some(if check_only {
+        "Rust formatting check completed for declared contracts".to_string()
+    } else {
+        "Rust formatting completed for declared contracts".to_string()
+    });
+    report.data = Some(json!({
+        "mode": if check_only { "check" } else { "write" },
+        "contracts": formatted,
+    }));
+    report.next = if check_only {
+        vec!["stellar forge contract format".to_string()]
+    } else {
+        vec!["stellar forge contract lint".to_string()]
+    };
+    Ok(report)
+}
+
+fn contract_lint(context: &AppContext, name: Option<&str>) -> Result<CommandReport> {
+    let mut report = CommandReport::new("contract.lint");
+    if !context.globals.dry_run && !context.command_exists("cargo") {
+        bail!("cargo is required for `contract lint` but was not found on PATH");
+    }
+    let manifest = load_manifest(context)?;
+    let contracts: Vec<String> = match name {
+        Some(name) => vec![name.to_string()],
+        None => manifest.contracts.keys().cloned().collect(),
+    };
+    if contracts.is_empty() {
+        bail!("no contracts defined in the manifest");
+    }
+
+    let mut linted = Vec::new();
+    for contract_name in contracts {
+        let contract = manifest
+            .contracts
+            .get(&contract_name)
+            .ok_or_else(|| anyhow!("contract `{contract_name}` not found"))?;
+        let contract_dir = context.project_root().join(&contract.path);
+        let args = vec![
+            "clippy".to_string(),
+            "--all-targets".to_string(),
+            "--all-features".to_string(),
+            "--".to_string(),
+            "-D".to_string(),
+            "warnings".to_string(),
+        ];
+        context.run_command(&mut report, Some(&contract_dir), "cargo", &args)?;
+        linted.push(json!({
+            "name": contract_name,
+            "path": contract_dir.display().to_string(),
+        }));
+    }
+
+    report.message = Some("Rust lint completed for declared contracts".to_string());
+    report.data = Some(json!({
+        "contracts": linted,
+        "profile": "clippy --all-targets --all-features -- -D warnings",
+    }));
+    report.next = vec!["stellar forge contract build".to_string()];
     Ok(report)
 }
 
@@ -2177,13 +3296,24 @@ fn wallet_runtime_identity(wallet: &WalletConfig) -> Option<String> {
     }
 }
 
+pub(super) fn wallet_smart_contract_id_value(wallet: &WalletConfig) -> Option<String> {
+    if wallet.kind == "smart" && looks_like_account(wallet.identity.trim()) {
+        Some(wallet.identity.clone())
+    } else {
+        None
+    }
+}
+
 fn wallet_controller_identity_value(wallet: &WalletConfig) -> Option<String> {
     wallet
         .controller_identity
         .clone()
         .filter(|identity| !identity.trim().is_empty())
         .or_else(|| {
-            if wallet.kind == "smart" && !wallet.identity.trim().is_empty() {
+            if wallet.kind == "smart"
+                && !wallet.identity.trim().is_empty()
+                && !looks_like_account(wallet.identity.trim())
+            {
                 Some(wallet.identity.clone())
             } else {
                 None
@@ -2629,6 +3759,11 @@ fn sync_frontend_scaffold(
         &web_root.join("scripts/ui-smoke.mjs"),
         templates::web_ui_smoke_runner(),
     )?;
+    context.write_text(
+        report,
+        &web_root.join("scripts/ui-browser-smoke.mjs"),
+        templates::web_ui_browser_smoke_runner(),
+    )?;
     sync_frontend_generated_state(context, report, root, manifest, &manifest.defaults.network)?;
     Ok(())
 }
@@ -2640,14 +3775,25 @@ fn sync_frontend_generated_state(
     manifest: &Manifest,
     env: &str,
 ) -> Result<()> {
+    let lockfile = Lockfile::load(&root.join("stellarforge.lock.json"))?;
+    sync_frontend_generated_state_with_lockfile(context, report, root, manifest, &lockfile, env)
+}
+
+fn sync_frontend_generated_state_with_lockfile(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+) -> Result<()> {
     let web_root = root.join("apps/web");
     context.ensure_dir(report, &web_root.join("src/generated"))?;
-    let lockfile = Lockfile::load(&root.join("stellarforge.lock.json"))?;
     let event_cursors = load_event_cursors(root)?;
     context.write_text(
         report,
         &web_root.join("src/generated/stellar.ts"),
-        &templates::web_generated_state(manifest, &lockfile, &event_cursors, env),
+        &templates::web_generated_state(manifest, lockfile, &event_cursors, env),
     )
 }
 
@@ -3903,25 +5049,22 @@ fn write_contract_stub(
         )?;
         return Ok(());
     }
+    let starter = templates::starter_contract_files(name, template);
     context.write_text(
         report,
         &contract_root.join("Cargo.toml"),
         &format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n"
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"lib\", \"cdylib\"]\ndoctest = false\n\n[dependencies]\nsoroban-sdk = \"25\"\n\n[dev-dependencies]\nsoroban-sdk = {{ version = \"25\", features = [\"testutils\"] }}\n"
         ),
     )?;
-    context.write_text(
-        report,
-        &contract_root.join("src/lib.rs"),
-        &format!(
-            "#![allow(dead_code)]\n\npub fn template_name() -> &'static str {{\n    \"{template}\"\n}}\n"
-        ),
-    )?;
-    context.write_text(
-        report,
-        &contract_root.join("README.md"),
-        &format!("# {name}\n\nScaffolded contract placeholder for template `{template}`.\n"),
-    )?;
+    context.write_text(report, &contract_root.join("src/lib.rs"), &starter.lib_rs)?;
+    if let Some(test_rs) = starter.test_rs {
+        context.write_text(report, &contract_root.join("src/test.rs"), &test_rs)?;
+    }
+    context.write_text(report, &contract_root.join("README.md"), &starter.readme)?;
+    report.warnings.push(format!(
+        "contract `{name}` used the starter fallback scaffold for unsupported template `{template}`"
+    ));
     Ok(())
 }
 
@@ -4490,39 +5633,33 @@ fn build_openapi(manifest: &Manifest) -> Value {
                     }
                 }),
             ),
-        ]
-        .into_iter()
-        .collect::<serde_json::Map<String, Value>>(),
+        ],
     );
     if manifest.api.as_ref().is_some_and(|api| api.relayer) {
-        paths.extend(
-            [
-                (
-                    "/relayer/status".to_string(),
-                    json!({
-                        "get": {
-                            "summary": "Inspect relayer proxy configuration",
-                            "responses": {
-                                "200": { "description": "Relayer readiness" }
-                            }
+        paths.extend([
+            (
+                "/relayer/status".to_string(),
+                json!({
+                    "get": {
+                        "summary": "Inspect relayer proxy configuration",
+                        "responses": {
+                            "200": { "description": "Relayer readiness" }
                         }
-                    }),
-                ),
-                (
-                    "/relayer/submit".to_string(),
-                    json!({
-                        "post": {
-                            "summary": "Submit a sponsored transaction through the configured relayer",
-                            "responses": {
-                                "200": { "description": "Proxy submission result" }
-                            }
+                    }
+                }),
+            ),
+            (
+                "/relayer/submit".to_string(),
+                json!({
+                    "post": {
+                        "summary": "Submit a sponsored transaction through the configured relayer",
+                        "responses": {
+                            "200": { "description": "Proxy submission result" }
                         }
-                    }),
-                ),
-            ]
-            .into_iter()
-            .collect::<serde_json::Map<String, Value>>(),
-        );
+                    }
+                }),
+            ),
+        ]);
     }
     json!({
         "openapi": "3.1.0",
@@ -4712,6 +5849,10 @@ fn resolve_address(
         return Ok(value.to_string());
     }
     let logical = resolve_identity_name(manifest, value).unwrap_or_else(|| value.to_string());
+    validate_single_path_segment("identity or wallet name", &logical)?;
+    if looks_like_account(&logical) {
+        return Ok(logical);
+    }
     if context.globals.dry_run || !context.command_exists("stellar") {
         return Ok(format!("<{logical}>"));
     }
@@ -4742,10 +5883,10 @@ fn resolve_identity_name(manifest: Option<&Manifest>, input: &str) -> Option<Str
             ManifestRef::Identity(identity) => return Some(identity),
             ManifestRef::Wallet(wallet) => {
                 let manifest = manifest?;
-                return manifest
-                    .wallets
-                    .get(&wallet)
-                    .and_then(wallet_runtime_identity);
+                return manifest.wallets.get(&wallet).and_then(|wallet| {
+                    wallet_runtime_identity(wallet)
+                        .or_else(|| wallet_smart_contract_id_value(wallet))
+                });
             }
             _ => {}
         }
@@ -4755,7 +5896,8 @@ fn resolve_identity_name(manifest: Option<&Manifest>, input: &str) -> Option<Str
             return Some(input.to_string());
         }
         if let Some(wallet) = manifest.wallets.get(input)
-            && let Some(identity) = wallet_runtime_identity(wallet)
+            && let Some(identity) =
+                wallet_runtime_identity(wallet).or_else(|| wallet_smart_contract_id_value(wallet))
         {
             return Some(identity);
         }
@@ -4888,7 +6030,8 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         aggregate_status, amount_to_stroops, artifact_token, contract_fetch_output_path,
-        detect_package_manager, friendbot_url, parse_alias_map, parse_binding_package_directory,
+        detect_package_manager, friendbot_url, package_manager_browser_smoke_command,
+        package_manager_smoke_command, parse_alias_map, parse_binding_package_directory,
         project_sync_next_steps,
     };
     use crate::model::{ApiConfig, FrontendConfig, Manifest, NetworkConfig, ProjectConfig};
@@ -4974,6 +6117,42 @@ name = "qux-main"
                 "stellar forge project validate".to_string(),
                 "bun --cwd apps/api run dev".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn package_manager_smoke_command_uses_workspace_aware_invocations() {
+        assert_eq!(
+            package_manager_smoke_command("pnpm", "apps/web"),
+            "pnpm --dir apps/web 'smoke:ui'"
+        );
+        assert_eq!(
+            package_manager_browser_smoke_command("pnpm", "apps/web"),
+            "pnpm --dir apps/web 'smoke:browser'"
+        );
+        assert_eq!(
+            package_manager_smoke_command("npm", "apps/web"),
+            "npm --prefix apps/web run 'smoke:ui'"
+        );
+        assert_eq!(
+            package_manager_browser_smoke_command("npm", "apps/web"),
+            "npm --prefix apps/web run 'smoke:browser'"
+        );
+        assert_eq!(
+            package_manager_smoke_command("yarn", "apps/web"),
+            "yarn --cwd apps/web 'smoke:ui'"
+        );
+        assert_eq!(
+            package_manager_browser_smoke_command("yarn", "apps/web"),
+            "yarn --cwd apps/web 'smoke:browser'"
+        );
+        assert_eq!(
+            package_manager_smoke_command("bun", "apps/web"),
+            "bun --cwd apps/web run 'smoke:ui'"
+        );
+        assert_eq!(
+            package_manager_browser_smoke_command("bun", "apps/web"),
+            "bun --cwd apps/web run 'smoke:browser'"
         );
     }
 

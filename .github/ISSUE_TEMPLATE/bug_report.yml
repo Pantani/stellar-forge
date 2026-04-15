@@ -8,7 +8,12 @@ body:
     attributes:
       value: |
         Thanks for taking the time to report a bug.
-        Please include enough detail for someone else to reproduce the problem quickly.
+        The fastest fixes usually come from reports that include an exact command, a small repro, and the output you actually saw.
+
+        Before filing, please try:
+        - `stellar forge doctor`
+        - `stellar forge project validate`
+        - rerunning the failing command with `--json` or `--out`
 
   - type: textarea
     id: summary
@@ -20,10 +25,23 @@ body:
       required: true
 
   - type: textarea
+    id: commands
+    attributes:
+      label: Exact command or workflow
+      description: Paste the exact command you ran. If this happens in a multi-step workflow, include the sequence.
+      placeholder: |
+        stellar forge init demo --template fullstack
+        cd demo
+        stellar forge --json project validate --out dist/project.validate.json
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
     id: steps
     attributes:
       label: Steps to reproduce
-      description: Include commands, inputs, and any relevant files or config snippets.
+      description: Include manifest edits, input files, network choice, and any setup details needed to reproduce.
       placeholder: |
         1. Run `stellar forge init demo --template fullstack`
         2. Edit `stellarforge.toml` to ...
@@ -35,6 +53,7 @@ body:
     id: expected
     attributes:
       label: Expected behavior
+      placeholder: The command should return `status = ok` and write the report file.
     validations:
       required: true
 
@@ -42,8 +61,27 @@ body:
     id: actual
     attributes:
       label: Actual behavior
+      placeholder: The command exits with `status = error` and reports a missing contract that exists in the manifest.
     validations:
       required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant manifest or input snippet
+      description: Include only the smallest section needed to understand the bug.
+      placeholder: |
+        [contracts.rewards]
+        path = "contracts/rewards"
+        alias = "rewards"
+      render: toml
+
+  - type: textarea
+    id: reports
+    attributes:
+      label: Report output, logs, or screenshots
+      description: Paste terminal output, JSON report snippets, or screenshots if they help.
+      render: shell
 
   - type: input
     id: version
@@ -58,14 +96,16 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, Rust version, and whether the official `stellar` CLI is installed.
-      placeholder: macOS 15, rustc 1.89.0, stellar CLI 22.x
+      description: OS, Rust version, and installed tooling such as the official `stellar` CLI.
+      placeholder: macOS 15, rustc 1.89.0, stellar CLI 22.x, Docker installed, sqlite3 installed
     validations:
       required: true
 
-  - type: textarea
-    id: logs
+  - type: checkboxes
+    id: checks
     attributes:
-      label: Relevant logs or screenshots
-      description: Paste terminal output, JSON reports, or screenshots if they help.
-      render: shell
+      label: Quick checks
+      options:
+        - label: I ran `stellar forge doctor`
+        - label: I ran `stellar forge project validate` if the issue involves a workspace
+        - label: I checked the existing docs before filing

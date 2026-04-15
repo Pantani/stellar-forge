@@ -48,9 +48,11 @@ jobs:
         run: cargo test --locked
 
   generated-frontend-smoke:
-    name: Generated frontend smoke
+    name: Generated frontend browser smoke
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.home }}/.cache/ms-playwright
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,16 +74,31 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
+      - name: Capture pnpm store path
+        id: pnpm-store-path
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store-path.outputs.path }}
+          key: ${{ runner.os }}-browser-smoke-pnpm-store-v1
+          restore-keys: |
+            ${{ runner.os }}-browser-smoke-pnpm-store-
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-browser-smoke-playwright-v1
+          restore-keys: |
+            ${{ runner.os }}-browser-smoke-playwright-
+
       - name: Build CLI
         run: cargo build --locked
 
-      - name: Run generated frontend smoke runner
-        run: |
-          temp_dir="$(mktemp -d)"
-          cd "$temp_dir"
-          "$GITHUB_WORKSPACE/target/debug/stellar-forge" init demo --template fullstack
-          pnpm --dir demo/apps/web install --reporter=silent
-          pnpm --dir demo/apps/web smoke:ui
+      - name: Run generated frontend browser smoke runner
+        run: node scripts/generated-frontend-browser-smoke.mjs
 
   security:
     name: Security audit

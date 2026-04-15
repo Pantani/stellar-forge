@@ -1,0 +1,99 @@
+{
+  "info": {
+    "title": "demo API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/contracts/app/call/{fn}": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Simulation payload or tx plan"
+          }
+        },
+        "summary": "Preview contract call for `app`"
+      }
+    },
+    "/contracts/app/tx/{fn}": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Build-only transaction details"
+          }
+        },
+        "summary": "Build a transaction for `app`"
+      }
+    },
+    "/events/cursors": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Named cursors persisted by the ingest worker"
+          }
+        },
+        "summary": "List persisted event cursors"
+      }
+    },
+    "/events/status": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Current backend, resource list, and cursor summary"
+          }
+        },
+        "summary": "Inspect event ingestion status and tracked resources"
+      }
+    },
+    "/health": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Service health"
+          }
+        },
+        "summary": "Health probe"
+      }
+    },
+    "/ready": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Service readiness"
+          }
+        },
+        "summary": "Readiness probe"
+      }
+    },
+    "/version": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Project version"
+          }
+        },
+        "summary": "Version probe"
+      }
+    },
+    "/wallets": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Wallet inventory"
+          }
+        },
+        "summary": "List wallets declared in the manifest"
+      }
+    },
+    "/wallets/{name}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Wallet configuration entry"
+          }
+        },
+        "summary": "Inspect a wallet declared in the manifest"
+      }
+    }
+  }
+}

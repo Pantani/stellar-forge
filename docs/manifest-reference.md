@@ -18,6 +18,19 @@ The normal loop is:
 4. run operational commands such as `contract deploy`, `token create`, or `release deploy`
 5. commit both the manifest and the lockfile when the resulting state is intentional
 
+## What Lives Where
+
+The project state is intentionally split across a few files with different responsibilities:
+
+| File | Role | Edited by |
+| --- | --- | --- |
+| `stellarforge.toml` | desired project structure and release intent | humans and selected scaffold commands |
+| `stellarforge.lock.json` | observed deploy state per environment | deploy, token, adoption, and rollback flows |
+| `.env.example` | manifest-derived defaults | `init`, `project sync`, `doctor fix` |
+| `.env.generated` | runtime values derived from actual deployed state | `dev up`, `dev reseed`, `release env export`, `release deploy` |
+| `dist/deploy.<env>.json` | machine-readable deploy snapshot | `release env export`, `release deploy`, rollback helpers |
+| `workers/events/cursors.json` | local event cursor snapshot | `init`, event setup, `events backfill`, `dev snapshot` |
+
 ## Example Manifest
 
 ```toml
@@ -104,6 +117,115 @@ framework = "react-vite"
 deploy_contracts = ["rewards"]
 deploy_tokens = ["points"]
 generate_env = true
+
+[scenarios.checkout]
+description = "Dry-run the checkout happy path"
+network = "testnet"
+identity = "alice"
+
+[[scenarios.checkout.steps]]
+action = "project.validate"
+
+[[scenarios.checkout.steps]]
+action = "contract.call"
+contract = "rewards"
+function = "award_points"
+build_only = true
+args = ["--member", "alice", "--amount", "25"]
+
+[[scenarios.checkout.steps]]
+action = "wallet.pay"
+from = "treasury"
+to = "alice"
+asset = "points"
+amount = "10"
+build_only = true
+
+[[scenarios.checkout.steps]]
+action = "release.plan"
+
+[[scenarios.checkout.assertions]]
+assertion = "status"
+status = "ok"
+
+[[scenarios.checkout.assertions]]
+assertion = "step"
+step = 2
+status = "ok"
+command_contains = ["stellar contract invoke", "award_points"]
+```
+
+## Minimal Contract-Only Manifest
+
+This is the smallest useful shape for a project that mainly wants contract lifecycle management:
+
+```toml
+[project]
+name = "hello-contract"
+slug = "hello-contract"
+version = "0.1.0"
+package_manager = "pnpm"
+
+[defaults]
+network = "testnet"
+identity = "alice"
+output = "human"
+
+[networks.testnet]
+kind = "testnet"
+rpc_url = "https://soroban-testnet.stellar.org"
+horizon_url = "https://horizon-testnet.stellar.org"
+network_passphrase = "Test SDF Network ; September 2015"
+allow_http = false
+friendbot = true
+
+[identities.alice]
+source = "stellar-cli"
+name = "alice"
+
+[wallets.alice]
+kind = "classic"
+identity = "alice"
+
+[contracts.app]
+path = "contracts/app"
+alias = "app"
+template = "basic"
+bindings = ["typescript"]
+deploy_on = ["testnet"]
+```
+
+## Smart-Wallet Example
+
+Smart wallets are still regular manifest entries, but they add controller and policy metadata:
+
+```toml
+[wallets.checkout-passkey]
+kind = "smart"
+mode = "passkey"
+controller_identity = "checkout-owner"
+onboarding_app = "apps/smart-wallet/checkout-passkey"
+policy_contract = "checkout-passkey-policy"
+
+[identities.checkout-owner]
+source = "stellar-cli"
+name = "checkout-owner"
+
+[contracts.checkout-passkey-policy]
+path = "contracts/checkout-passkey-policy"
+alias = "checkout-passkey-policy"
+template = "smart-wallet-policy"
+bindings = ["typescript"]
+deploy_on = ["testnet"]
+```
+
+Typical follow-up commands:
+
+```bash
+stellar forge wallet smart onboard checkout-passkey
+stellar forge wallet smart materialize checkout-passkey
+stellar forge wallet smart policy diff checkout-passkey
+stellar forge wallet smart policy sync checkout-passkey
 ```
 
 ## Manifest Sections
@@ -247,6 +369,139 @@ Optional release override for a specific environment.
 If `[release.<env>]` is missing, `release plan|deploy|verify` fall back to all declared contracts
 and tokens.
 
+### `[scenarios.<name>]`
+
+Optional named workflows that compose existing CLI primitives into a reproducible rehearsal.
+
+Top-level keys:
+
+| Key | Meaning |
+| --- | --- |
+| `description` | Human-oriented label shown in reports |
+| `network` | Optional default network for the scenario |
+| `identity` | Optional default identity for the scenario |
+| `steps` | Ordered list of typed steps |
+| `assertions` | Optional checks evaluated by `scenario test` after all preview steps finish |
+
+Supported step actions in v1:
+
+- `project.validate`
+- `project.sync`
+- `dev.up`
+- `dev.reseed`
+- `dev.fund`
+- `contract.build`
+- `contract.deploy`
+- `contract.call`
+- `token.mint`
+- `wallet.pay`
+- `release.plan`
+- `release.verify`
+
+Example:
+
+```toml
+[scenarios.local-refresh]
+description = "Refresh derived files and preview a release"
+network = "local"
+identity = "alice"
+
+[[scenarios.local-refresh.steps]]
+action = "project.sync"
+
+[[scenarios.local-refresh.steps]]
+action = "project.validate"
+
+[[scenarios.local-refresh.steps]]
+action = "release.plan"
+env = "local"
+
+[[scenarios.local-refresh.assertions]]
+assertion = "status"
+status = "ok"
+
+[[scenarios.local-refresh.assertions]]
+assertion = "step"
+step = 3
+command_contains = ["release plan local"]
+```
+
+Run these with:
+
+```bash
+stellar forge scenario test local-refresh
+stellar forge scenario run local-refresh
+```
+
+Supported assertions in v1:
+
+- `assertion = "status"` with `status = "ok" | "warn" | "error"`
+- `assertion = "step"` with a 1-based `step` plus any combination of:
+  `status`, `command_contains`, `artifact_contains`, `warning_contains`
+
+### Scenario Step Recipes
+
+The scenario system intentionally reuses normal CLI semantics. A few common step shapes:
+
+Validate and sync:
+
+```toml
+[[scenarios.refresh.steps]]
+action = "project.validate"
+
+[[scenarios.refresh.steps]]
+action = "project.sync"
+```
+
+Build and deploy a named contract:
+
+```toml
+[[scenarios.release-check.steps]]
+action = "contract.build"
+contract = "rewards"
+optimize = true
+
+[[scenarios.release-check.steps]]
+action = "contract.deploy"
+contract = "rewards"
+env = "testnet"
+```
+
+Preview a contract call without sending:
+
+```toml
+[[scenarios.checkout.steps]]
+action = "contract.call"
+contract = "rewards"
+function = "award_points"
+build_only = true
+args = ["--member", "alice", "--amount", "25"]
+```
+
+Preview a payment:
+
+```toml
+[[scenarios.checkout.steps]]
+action = "wallet.pay"
+from = "treasury"
+to = "alice"
+asset = "points"
+amount = "10"
+build_only = true
+```
+
+Release preflight:
+
+```toml
+[[scenarios.release-check.steps]]
+action = "release.plan"
+env = "testnet"
+
+[[scenarios.release-check.steps]]
+action = "release.verify"
+env = "testnet"
+```
+
 ## Manifest Reference Syntax
 
 Several manifest fields accept symbolic references instead of raw addresses or IDs.
@@ -266,6 +521,22 @@ Typical places you will use these:
 - token issuer and distribution fields
 - contract init arguments
 - release arguments derived from contract init config
+
+Examples:
+
+```toml
+issuer = "@identity:issuer"
+distribution = "@wallet:treasury"
+token = "@token:points:sac"
+admin_contract = "@contract:rewards"
+```
+
+How to read them:
+
+- `@identity:issuer` resolves through `[identities.issuer]`
+- `@wallet:treasury` resolves through `[wallets.treasury]`
+- `@token:points:sac` means "the deployed SAC wrapper for token `points`"
+- `@contract:rewards` means "the deployed contract id for `rewards` in the active environment"
 
 ## Validation Rules Worth Knowing
 
@@ -349,6 +620,23 @@ The lockfile is how later commands resolve:
 | `dist/registry.<env>.json` | Registry publish/deploy flows |
 | `dist/contracts/<name>.<env>.wasm` | `contract fetch` |
 
+## Which Commands Update Which Files
+
+When you are reviewing a diff, this table helps you decide whether the changed files make sense:
+
+| Command family | Usually updates |
+| --- | --- |
+| `project sync` | `.env.example`, API/frontend scaffold files, generated state, OpenAPI output |
+| `doctor fix --scope scripts` | `scripts/doctor.mjs`, `scripts/reseed.mjs`, `scripts/release.mjs` |
+| `doctor fix --scope api` | `apps/api/**`, `apps/api/openapi.json` |
+| `doctor fix --scope frontend` | `apps/web/**`, generated frontend state |
+| `contract bind` | `packages/**` |
+| `events backfill` | local sqlite store plus `workers/events/cursors.json` |
+| `release deploy` | `stellarforge.lock.json`, `.env.generated`, `dist/deploy.<env>.json` |
+| `release env export` | `.env.generated`, `dist/deploy.<env>.json` |
+| `release rollback` | `stellarforge.lock.json`, `.env.generated`, `dist/deploy.<env>.json` |
+| `dev snapshot save|load` | snapshot artifacts and restored local state files |
+
 ## Environment Variables
 
 ### Used directly by the CLI
@@ -401,3 +689,12 @@ stellar forge release verify testnet
 
 Treat `stellarforge.toml`, `stellarforge.lock.json`, `.env.generated`, and `dist/deploy.<env>.json`
 as a coherent set whenever a release changes.
+
+Editing checklist:
+
+1. edit `stellarforge.toml`
+2. run `stellar forge project validate`
+3. run `stellar forge project sync`
+4. run the narrow operational command you actually changed for
+5. inspect `stellarforge.lock.json`, `.env.generated`, and `dist/deploy.<env>.json` if deploy state changed
+6. commit the declarative and generated files together when the outcome is intentional

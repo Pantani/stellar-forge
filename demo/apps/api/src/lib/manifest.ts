@@ -1,0 +1,81 @@
+export const manifest = {
+  "project": {
+    "name": "demo",
+    "slug": "demo",
+    "version": "0.1.0",
+    "package_manager": "pnpm"
+  },
+  "defaults": {
+    "network": "testnet",
+    "identity": "alice",
+    "output": "human"
+  },
+  "networks": {
+    "futurenet": {
+      "kind": "futurenet",
+      "rpc_url": "https://rpc-futurenet.stellar.org",
+      "horizon_url": "https://horizon-futurenet.stellar.org",
+      "network_passphrase": "Test SDF Future Network ; October 2022",
+      "allow_http": false,
+      "friendbot": true
+    },
+    "local": {
+      "kind": "local",
+      "rpc_url": "http://localhost:8000/rpc",
+      "horizon_url": "http://localhost:8000",
+      "network_passphrase": "Standalone Network ; February 2017",
+      "allow_http": true,
+      "friendbot": true
+    },
+    "testnet": {
+      "kind": "testnet",
+      "rpc_url": "https://soroban-testnet.stellar.org",
+      "horizon_url": "https://horizon-testnet.stellar.org",
+      "network_passphrase": "Test SDF Network ; September 2015",
+      "allow_http": false,
+      "friendbot": true
+    }
+  },
+  "identities": {
+    "alice": {
+      "source": "stellar-cli",
+      "name": "alice"
+    }
+  },
+  "wallets": {
+    "alice": {
+      "kind": "classic",
+      "identity": "alice"
+    }
+  },
+  "tokens": {},
+  "contracts": {
+    "app": {
+      "path": "contracts/app",
+      "alias": "app",
+      "template": "basic",
+      "bindings": [
+        "typescript"
+      ],
+      "deploy_on": [
+        "local",
+        "testnet"
+      ],
+      "init": null
+    }
+  },
+  "api": {
+    "enabled": true,
+    "framework": "fastify",
+    "database": "sqlite",
+    "events_backend": "rpc-poller",
+    "openapi": true,
+    "relayer": false
+  },
+  "frontend": {
+    "enabled": true,
+    "framework": "react-vite"
+  },
+  "release": {},
+  "scenarios": {}
+} as const;

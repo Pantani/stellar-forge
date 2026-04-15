@@ -1,16 +1,38 @@
 use super::*;
+use crate::cli::DoctorFixScope;
 
-pub(super) fn doctor_command(
-    context: &AppContext,
-    command: Option<DoctorCommand>,
-) -> Result<CommandReport> {
-    match command {
+pub(super) fn doctor_command(context: &AppContext, args: DoctorArgs) -> Result<CommandReport> {
+    let DoctorArgs { out, command } = args;
+    let out = doctor_command_output_path(&command).or(out);
+    let mut report = match command {
         None => doctor_all(context),
-        Some(DoctorCommand::Env) => doctor_env(context),
-        Some(DoctorCommand::Deps) => doctor_deps(context),
-        Some(DoctorCommand::Network { env }) => doctor_network(context, Some(&env)),
-        Some(DoctorCommand::Project) => doctor_project(context),
+        Some(DoctorCommand::Env(_)) => doctor_env(context),
+        Some(DoctorCommand::Deps(_)) => doctor_deps(context),
+        Some(DoctorCommand::Audit(_)) => doctor_audit(context),
+        Some(DoctorCommand::Fix(args)) => doctor_fix_scoped(context, args.scope),
+        Some(DoctorCommand::Network(args)) => doctor_network(context, Some(&args.env)),
+        Some(DoctorCommand::Project(_)) => doctor_project(context),
+    }?;
+    if let Some(path) = out.as_deref() {
+        persist_report_output(context, &mut report, path)?;
     }
+    Ok(report)
+}
+
+fn doctor_command_output_path(command: &Option<DoctorCommand>) -> Option<PathBuf> {
+    match command {
+        Some(DoctorCommand::Env(args)) => args.out.clone(),
+        Some(DoctorCommand::Deps(args)) => args.out.clone(),
+        Some(DoctorCommand::Audit(args)) => args.out.clone(),
+        Some(DoctorCommand::Fix(args)) => args.out.clone(),
+        Some(DoctorCommand::Network(args)) => args.out.clone(),
+        Some(DoctorCommand::Project(args)) => args.out.clone(),
+        _ => None,
+    }
+}
+
+pub(super) fn doctor_audit(context: &AppContext) -> Result<CommandReport> {
+    doctor_diagnostics(context, "doctor.audit")
 }
 
 pub(super) fn scaffold_compatibility_snapshot(
@@ -260,7 +282,11 @@ fn scaffold_deployment_issues(
 }
 
 fn doctor_all(context: &AppContext) -> Result<CommandReport> {
-    let mut report = CommandReport::new("doctor");
+    doctor_diagnostics(context, "doctor")
+}
+
+fn doctor_diagnostics(context: &AppContext, report_name: &str) -> Result<CommandReport> {
+    let mut report = CommandReport::new(report_name);
     let deps = doctor_deps(context)?;
     let env = doctor_env(context)?;
     report.checks.extend(deps.checks);
@@ -597,6 +623,151 @@ fn doctor_project(context: &AppContext) -> Result<CommandReport> {
     Ok(report)
 }
 
+#[allow(dead_code)]
+fn doctor_fix(context: &AppContext) -> Result<CommandReport> {
+    doctor_fix_scoped(context, Some(DoctorFixScope::All))
+}
+
+pub(super) fn doctor_fix_scoped(
+    context: &AppContext,
+    scope: Option<DoctorFixScope>,
+) -> Result<CommandReport> {
+    let mut report = CommandReport::new("doctor.fix");
+    if !context.manifest_path.exists() {
+        report.checks.push(check(
+            "manifest",
+            "error",
+            Some("stellarforge.toml not found".to_string()),
+        ));
+        report.status = "error".to_string();
+        report.message = Some("doctor fix could not run without a manifest".to_string());
+        return Ok(report);
+    }
+
+    let manifest = load_manifest(context)?;
+    let root = context.project_root();
+    let manifest_errors = manifest.validate(&root);
+    if !manifest_errors.is_empty() {
+        for error in manifest_errors {
+            report.checks.push(check("manifest", "error", Some(error)));
+        }
+        report.status = "error".to_string();
+        report.message = Some("doctor fix was blocked by manifest errors".to_string());
+        report.next = vec![
+            "stellar forge project validate".to_string(),
+            "stellar forge doctor project".to_string(),
+        ];
+        return Ok(report);
+    }
+
+    let scope = scope.unwrap_or(DoctorFixScope::All);
+    let scope_label = match scope {
+        DoctorFixScope::All => "all",
+        DoctorFixScope::Scripts => "scripts",
+        DoctorFixScope::Api => "api",
+        DoctorFixScope::Frontend => "frontend",
+        DoctorFixScope::Events => "events",
+        DoctorFixScope::Release => "release",
+        DoctorFixScope::Lockfile => "lockfile",
+    };
+
+    let mut repaired = Vec::new();
+    let lockfile_path = root.join("stellarforge.lock.json");
+    let mut lockfile = if lockfile_path.exists() {
+        Some(load_lockfile(context)?)
+    } else {
+        None
+    };
+    let env = manifest
+        .active_network(context.globals.network.as_deref())
+        .ok()
+        .map(|(name, _)| name.to_string());
+
+    match scope {
+        DoctorFixScope::All => {
+            repaired.extend(repair_managed_project_files(
+                context,
+                &mut report,
+                &root,
+                &manifest,
+                lockfile.as_ref(),
+                env.as_deref(),
+            )?);
+            if lockfile.is_none() && lockfile_path.exists() {
+                lockfile = Some(load_lockfile(context)?);
+            }
+        }
+        DoctorFixScope::Scripts => {
+            repaired.extend(repair_doctor_scripts(context, &mut report, &root)?);
+        }
+        DoctorFixScope::Api => {
+            repaired.extend(repair_doctor_api(context, &mut report, &root, &manifest)?);
+        }
+        DoctorFixScope::Frontend => {
+            repaired.extend(repair_doctor_frontend(
+                context,
+                &mut report,
+                &root,
+                &manifest,
+                lockfile.as_ref(),
+                env.as_deref(),
+            )?);
+        }
+        DoctorFixScope::Events => {
+            repaired.extend(repair_doctor_events(context, &mut report, &root)?);
+        }
+        DoctorFixScope::Release => {
+            repaired.extend(repair_doctor_release(
+                context,
+                &mut report,
+                &root,
+                &manifest,
+                lockfile.as_ref(),
+                env.as_deref(),
+            )?);
+        }
+        DoctorFixScope::Lockfile => {
+            repaired.extend(repair_doctor_lockfile(context, &mut report, &root)?);
+            lockfile = Some(load_lockfile(context)?);
+        }
+    }
+
+    if let Some(env_name) = env.as_deref() {
+        report.network = Some(env_name.to_string());
+    }
+
+    let fallback_lockfile = Lockfile::default();
+    let verification_checks = match scope {
+        DoctorFixScope::All => doctor_project(context)?.checks,
+        _ => doctor_fix_scope_checks(
+            context,
+            scope,
+            &root,
+            &manifest,
+            lockfile.as_ref().unwrap_or(&fallback_lockfile),
+            env.as_deref(),
+        )?,
+    };
+    report.status = aggregate_status(&verification_checks);
+    report.checks = verification_checks;
+    report.message = Some(if report.status == "ok" {
+        format!("{scope_label} area repaired and rechecked")
+    } else if report.status == "warn" {
+        format!("{scope_label} area repaired; warnings remain")
+    } else {
+        format!("{scope_label} area repaired; manual follow-up is still needed")
+    });
+    report.next = vec![
+        "stellar forge doctor project".to_string(),
+        "stellar forge project validate".to_string(),
+    ];
+    report.data = Some(json!({
+        "scope": scope_label,
+        "repaired": repaired,
+    }));
+    Ok(report)
+}
+
 pub(super) fn doctor_network(
     context: &AppContext,
     env_name: Option<&str>,
@@ -818,6 +989,10 @@ fn append_project_scaffold_checks(report: &mut CommandReport, root: &Path, manif
             (
                 "frontend:ui-smoke-runner",
                 root.join("apps/web/scripts/ui-smoke.mjs"),
+            ),
+            (
+                "frontend:ui-browser-smoke-runner",
+                root.join("apps/web/scripts/ui-browser-smoke.mjs"),
             ),
             (
                 "frontend:generated-state",
@@ -1056,6 +1231,12 @@ fn append_project_generated_file_checks(
             &root.join("apps/web/scripts/ui-smoke.mjs"),
             templates::web_ui_smoke_runner(),
         ));
+        report.checks.push(generated_file_consistency_check(
+            context,
+            "frontend:ui-browser-smoke-runner:consistency",
+            &root.join("apps/web/scripts/ui-browser-smoke.mjs"),
+            templates::web_ui_browser_smoke_runner(),
+        ));
     }
 
     Ok(())
@@ -1077,7 +1258,7 @@ fn generated_file_consistency_check(
             label,
             "error",
             Some(format!(
-                "{} differs from the generated output; run `stellar forge project sync`",
+                "{} differs from the generated output; run `stellar forge doctor fix` or `stellar forge project sync`",
                 path.display()
             )),
         ),
@@ -1269,18 +1450,6 @@ fn event_resource_exists(manifest: &Manifest, resource: &str) -> bool {
         || looks_like_account(resource)
 }
 
-fn path_check(
-    label: impl Into<String>,
-    path: &Path,
-    missing_status: &str,
-) -> crate::runtime::CheckResult {
-    check(
-        label.into(),
-        if path.exists() { "ok" } else { missing_status },
-        Some(path.display().to_string()),
-    )
-}
-
 fn stale_lockfile_checks(
     manifest: &Manifest,
     lockfile: &Lockfile,
@@ -1307,4 +1476,515 @@ fn stale_lockfile_checks(
         }
     }
     checks
+}
+
+fn repair_project_env_example(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<String>> {
+    context.write_text(
+        report,
+        &root.join(".env.example"),
+        &templates::env_example(manifest),
+    )?;
+    Ok(vec!["env_example".to_string()])
+}
+
+fn repair_doctor_scripts(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+) -> Result<Vec<String>> {
+    context.ensure_dir(report, &root.join("scripts"))?;
+    context.write_text(
+        report,
+        &root.join("scripts/reseed.mjs"),
+        templates::project_reseed_script(),
+    )?;
+    context.write_text(
+        report,
+        &root.join("scripts/release.mjs"),
+        templates::project_release_script(),
+    )?;
+    context.write_text(
+        report,
+        &root.join("scripts/doctor.mjs"),
+        templates::project_doctor_script(),
+    )?;
+    Ok(vec!["scripts".to_string()])
+}
+
+fn repair_doctor_api(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<String>> {
+    let Some(api) = manifest.api.as_ref().filter(|api| api.enabled) else {
+        return Ok(Vec::new());
+    };
+    let api_root = root.join("apps/api");
+    let relayer_enabled = api.relayer;
+    context.ensure_dir(report, &api_root.join("src/routes"))?;
+    context.ensure_dir(report, &api_root.join("src/services"))?;
+    context.ensure_dir(report, &api_root.join("src/services/contracts"))?;
+    context.ensure_dir(report, &api_root.join("src/services/events"))?;
+    context.ensure_dir(report, &api_root.join("src/services/tokens"))?;
+    context.ensure_dir(report, &api_root.join("src/workers"))?;
+    context.ensure_dir(report, &api_root.join("src/lib"))?;
+    context.ensure_dir(report, &api_root.join("db"))?;
+    context.write_text(
+        report,
+        &api_root.join("package.json"),
+        templates::api_package_json(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("tsconfig.json"),
+        templates::api_tsconfig(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join(".env.example"),
+        &templates::api_env_example(manifest),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/server.ts"),
+        &templates::api_server(manifest),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/health.ts"),
+        templates::api_health_routes(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/contracts.ts"),
+        &render_contract_routes(manifest),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/events.ts"),
+        &render_event_routes(manifest),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/relayer.ts"),
+        templates::api_relayer_routes(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/tokens.ts"),
+        &render_token_routes(manifest),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/routes/wallets.ts"),
+        templates::api_wallet_routes(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/services/rpc.ts"),
+        templates::api_rpc_service(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/services/relayer.ts"),
+        templates::api_relayer_service(),
+    )?;
+    for (name, contract) in &manifest.contracts {
+        context.write_text(
+            report,
+            &api_root
+                .join("src/services/contracts")
+                .join(format!("{name}.ts")),
+            &templates::api_contract_resource_service(name, contract, relayer_enabled),
+        )?;
+    }
+    for (name, token) in &manifest.tokens {
+        context.write_text(
+            report,
+            &api_root
+                .join("src/services/tokens")
+                .join(format!("{name}.ts")),
+            &templates::api_token_resource_service(name, token),
+        )?;
+    }
+    context.write_text(
+        report,
+        &api_root.join("src/lib/config.ts"),
+        templates::api_config(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/lib/errors.ts"),
+        templates::api_errors(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/lib/events-store.ts"),
+        templates::api_events_store(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/lib/manifest.ts"),
+        &render_api_manifest_module(manifest)?,
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("src/workers/ingest-events.ts"),
+        templates::api_events_worker(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("db/schema.sql"),
+        templates::api_events_schema(),
+    )?;
+    context.write_text(
+        report,
+        &api_root.join("openapi.json"),
+        &serde_json::to_string_pretty(&build_openapi(manifest))?,
+    )?;
+    Ok(vec!["api".to_string()])
+}
+
+fn repair_doctor_lockfile(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+) -> Result<Vec<String>> {
+    let lockfile_path = root.join("stellarforge.lock.json");
+    if lockfile_path.exists() {
+        let lockfile = Lockfile::load(&lockfile_path)?;
+        context.write_text(
+            report,
+            &lockfile_path,
+            &serde_json::to_string_pretty(&lockfile)?,
+        )?;
+    } else {
+        save_lockfile(context, report, &Lockfile::default())?;
+    }
+    Ok(vec!["lockfile".to_string()])
+}
+
+fn repair_doctor_events(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+) -> Result<Vec<String>> {
+    context.ensure_dir(report, &root.join("workers/events"))?;
+    context.write_text(
+        report,
+        &root.join("workers/events/ingest-events.mjs"),
+        templates::worker_stub(),
+    )?;
+    let paths = event_store_paths(root);
+    let mut repaired = vec!["events_worker".to_string()];
+    if let Some(rows) = load_sqlite_event_cursors(context, report, root)? {
+        write_cursor_snapshot(context, report, &paths.snapshot_path, &rows)?;
+        repaired.push("events_cursor_snapshot".to_string());
+    } else if !paths.snapshot_path.exists() {
+        context.write_text(report, &paths.snapshot_path, "{\n  \"cursors\": {}\n}\n")?;
+        repaired.push("events_cursor_snapshot".to_string());
+    }
+    Ok(repaired)
+}
+
+fn repair_doctor_frontend(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: Option<&Lockfile>,
+    env: Option<&str>,
+) -> Result<Vec<String>> {
+    let Some(_) = manifest
+        .frontend
+        .as_ref()
+        .filter(|frontend| frontend.enabled)
+    else {
+        return Ok(Vec::new());
+    };
+    let web_root = root.join("apps/web");
+    context.ensure_dir(report, &web_root.join("src"))?;
+    context.ensure_dir(report, &web_root.join("src/generated"))?;
+    context.ensure_dir(report, &web_root.join("scripts"))?;
+    context.write_text(
+        report,
+        &web_root.join("package.json"),
+        templates::web_package_json(),
+    )?;
+    context.write_text(
+        report,
+        &web_root.join("index.html"),
+        templates::web_index_html(),
+    )?;
+    context.write_text(
+        report,
+        &web_root.join("src/main.tsx"),
+        &templates::web_main(manifest),
+    )?;
+    context.write_text(
+        report,
+        &web_root.join("scripts/ui-smoke.mjs"),
+        templates::web_ui_smoke_runner(),
+    )?;
+    context.write_text(
+        report,
+        &web_root.join("scripts/ui-browser-smoke.mjs"),
+        templates::web_ui_browser_smoke_runner(),
+    )?;
+    let fallback_lockfile = Lockfile::default();
+    let lockfile = lockfile.unwrap_or(&fallback_lockfile);
+    let env_name = env.unwrap_or(&manifest.defaults.network);
+    let event_cursors = load_event_cursors(root)?;
+    context.write_text(
+        report,
+        &web_root.join("src/generated/stellar.ts"),
+        &templates::web_generated_state(manifest, lockfile, &event_cursors, env_name),
+    )?;
+    Ok(vec!["frontend".to_string()])
+}
+
+fn repair_doctor_release(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: Option<&Lockfile>,
+    env: Option<&str>,
+) -> Result<Vec<String>> {
+    let Some(env) = env else {
+        return Ok(Vec::new());
+    };
+    let fallback_lockfile = Lockfile::default();
+    let lockfile = lockfile.unwrap_or(&fallback_lockfile);
+    let env_lines = release::release_env_lines(manifest, lockfile, env)?;
+    context.ensure_dir(report, &root.join("dist"))?;
+    context.write_text(
+        report,
+        &root.join(".env.generated"),
+        &(env_lines.join("\n") + "\n"),
+    )?;
+    release::write_release_artifact(context, report, manifest, lockfile, env)?;
+    Ok(vec![
+        "release_env".to_string(),
+        "release_artifact".to_string(),
+    ])
+}
+
+fn repair_managed_project_files(
+    context: &AppContext,
+    report: &mut CommandReport,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: Option<&Lockfile>,
+    env: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut repaired = Vec::new();
+    repaired.extend(repair_project_env_example(context, report, root, manifest)?);
+    repaired.extend(repair_doctor_scripts(context, report, root)?);
+    repaired.extend(repair_doctor_api(context, report, root, manifest)?);
+    repaired.extend(repair_doctor_lockfile(context, report, root)?);
+    repaired.extend(repair_doctor_events(context, report, root)?);
+    repaired.extend(repair_doctor_frontend(
+        context, report, root, manifest, lockfile, env,
+    )?);
+    repaired.extend(repair_doctor_release(
+        context, report, root, manifest, lockfile, env,
+    )?);
+    Ok(repaired)
+}
+
+fn doctor_fix_scope_checks(
+    context: &AppContext,
+    scope: DoctorFixScope,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: Option<&str>,
+) -> Result<Vec<crate::runtime::CheckResult>> {
+    let checks = match scope {
+        DoctorFixScope::All => unreachable!("all scope is verified through project checks"),
+        DoctorFixScope::Scripts => vec![
+            path_check(
+                "scripts:release",
+                &root.join("scripts/release.mjs"),
+                "error",
+            ),
+            path_check("scripts:doctor", &root.join("scripts/doctor.mjs"), "error"),
+            path_check("scripts:reseed", &root.join("scripts/reseed.mjs"), "error"),
+        ],
+        DoctorFixScope::Api => {
+            if !manifest.api.as_ref().is_some_and(|api| api.enabled) {
+                vec![check(
+                    "api",
+                    "warn",
+                    Some("api scaffold is disabled in the manifest".to_string()),
+                )]
+            } else {
+                let mut checks = Vec::new();
+                for (label, path) in [
+                    ("api:env-example", root.join("apps/api/.env.example")),
+                    ("api:package", root.join("apps/api/package.json")),
+                    ("api:tsconfig", root.join("apps/api/tsconfig.json")),
+                    ("api:openapi", root.join("apps/api/openapi.json")),
+                    ("api:server", root.join("apps/api/src/server.ts")),
+                    (
+                        "api:health-route",
+                        root.join("apps/api/src/routes/health.ts"),
+                    ),
+                    (
+                        "api:contracts-route",
+                        root.join("apps/api/src/routes/contracts.ts"),
+                    ),
+                    (
+                        "api:events-route",
+                        root.join("apps/api/src/routes/events.ts"),
+                    ),
+                    (
+                        "api:tokens-route",
+                        root.join("apps/api/src/routes/tokens.ts"),
+                    ),
+                    (
+                        "api:wallets-route",
+                        root.join("apps/api/src/routes/wallets.ts"),
+                    ),
+                    (
+                        "api:event-store",
+                        root.join("apps/api/src/lib/events-store.ts"),
+                    ),
+                    ("api:config", root.join("apps/api/src/lib/config.ts")),
+                    ("api:errors", root.join("apps/api/src/lib/errors.ts")),
+                    (
+                        "api:manifest-lib",
+                        root.join("apps/api/src/lib/manifest.ts"),
+                    ),
+                    ("api:rpc-service", root.join("apps/api/src/services/rpc.ts")),
+                    (
+                        "api:event-worker",
+                        root.join("apps/api/src/workers/ingest-events.ts"),
+                    ),
+                    ("api:event-schema", root.join("apps/api/db/schema.sql")),
+                ] {
+                    checks.push(path_check(label, &path, "error"));
+                }
+                if manifest.api.as_ref().is_some_and(|api| api.relayer) {
+                    checks.push(path_check(
+                        "api:relayer-route",
+                        &root.join("apps/api/src/routes/relayer.ts"),
+                        "error",
+                    ));
+                    checks.push(path_check(
+                        "api:relayer-service",
+                        &root.join("apps/api/src/services/relayer.ts"),
+                        "error",
+                    ));
+                }
+                checks
+            }
+        }
+        DoctorFixScope::Frontend => {
+            if !manifest
+                .frontend
+                .as_ref()
+                .is_some_and(|frontend| frontend.enabled)
+            {
+                vec![check(
+                    "frontend",
+                    "warn",
+                    Some("frontend scaffold is disabled in the manifest".to_string()),
+                )]
+            } else {
+                let mut checks = Vec::new();
+                for (label, path) in [
+                    ("frontend:package", root.join("apps/web/package.json")),
+                    ("frontend:index", root.join("apps/web/index.html")),
+                    ("frontend:entry", root.join("apps/web/src/main.tsx")),
+                    (
+                        "frontend:ui-smoke-runner",
+                        root.join("apps/web/scripts/ui-smoke.mjs"),
+                    ),
+                    (
+                        "frontend:ui-browser-smoke-runner",
+                        root.join("apps/web/scripts/ui-browser-smoke.mjs"),
+                    ),
+                ] {
+                    checks.push(path_check(label, &path, "error"));
+                }
+                let env_name = env.unwrap_or(&manifest.defaults.network);
+                let expected = templates::web_generated_state(
+                    manifest,
+                    lockfile,
+                    &load_event_cursors(root)?,
+                    env_name,
+                );
+                checks.push(generated_file_consistency_check(
+                    context,
+                    "frontend:generated-state:consistency",
+                    &root.join("apps/web/src/generated/stellar.ts"),
+                    &expected,
+                ));
+                checks
+            }
+        }
+        DoctorFixScope::Events => {
+            let mut checks = vec![
+                path_check(
+                    "events:ingest-worker",
+                    &root.join("workers/events/ingest-events.mjs"),
+                    "error",
+                ),
+                path_check(
+                    "events:cursor-snapshot",
+                    &root.join("workers/events/cursors.json"),
+                    "error",
+                ),
+            ];
+            if let Some(events_check) =
+                event_worker_config_check(root, manifest, false, "events:config")
+            {
+                checks.push(events_check);
+            }
+            checks
+        }
+        DoctorFixScope::Release => {
+            if let Some(env_name) = env {
+                let env_lines = release::release_env_lines(manifest, lockfile, env_name)?;
+                let mut checks = vec![generated_file_consistency_check(
+                    context,
+                    "release:env:generated",
+                    &root.join(".env.generated"),
+                    &(env_lines.join("\n") + "\n"),
+                )];
+                let artifact = release::build_release_artifact(manifest, lockfile, env_name)?;
+                checks.push(generated_file_consistency_check(
+                    context,
+                    "release:artifact",
+                    &release::release_artifact_path(root, env_name),
+                    &serde_json::to_string_pretty(&artifact)?,
+                ));
+                checks
+            } else {
+                vec![check(
+                    "release:env",
+                    "warn",
+                    Some("no active network could be resolved for release repair".to_string()),
+                )]
+            }
+        }
+        DoctorFixScope::Lockfile => vec![check(
+            "lockfile",
+            if root.join("stellarforge.lock.json").exists() {
+                "ok"
+            } else {
+                "error"
+            },
+            Some(root.join("stellarforge.lock.json").display().to_string()),
+        )],
+    };
+    Ok(checks)
 }

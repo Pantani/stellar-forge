@@ -7,9 +7,12 @@ use shell_escape::escape;
 use std::borrow::Cow;
 use std::env;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -126,7 +129,8 @@ impl AppContext {
                 format!("failed to create parent directory {}", parent.display())
             })?;
         }
-        fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
+        write_text_atomic(path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
 
@@ -340,4 +344,177 @@ fn render_human(report: &CommandReport) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let (mut temp_file, mut temp_guard) = create_temp_file(parent, path.file_name())?;
+    temp_file.write_all(contents.as_bytes()).with_context(|| {
+        format!(
+            "failed to write temporary file {}",
+            temp_guard.path.display()
+        )
+    })?;
+    temp_file.flush().with_context(|| {
+        format!(
+            "failed to flush temporary file {}",
+            temp_guard.path.display()
+        )
+    })?;
+    temp_file.sync_all().with_context(|| {
+        format!(
+            "failed to sync temporary file {}",
+            temp_guard.path.display()
+        )
+    })?;
+    drop(temp_file);
+    fs::rename(&temp_guard.path, path).with_context(|| {
+        format!(
+            "failed to move temporary file {} to {}",
+            temp_guard.path.display(),
+            path.display()
+        )
+    })?;
+    temp_guard.keep = true;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+fn create_temp_file(
+    parent: &Path,
+    file_name: Option<&std::ffi::OsStr>,
+) -> Result<(File, TempPathGuard)> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let file_name = file_name
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "generated".to_string());
+    let pid = std::process::id();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_nanos();
+
+    for attempt in 0..64 {
+        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".{file_name}.{pid}.{timestamp}.{attempt}.{suffix}.tmp"
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                return Ok((
+                    file,
+                    TempPathGuard {
+                        path: candidate,
+                        keep: false,
+                    },
+                ));
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to create temporary file {}", candidate.display())
+                });
+            }
+        }
+    }
+
+    bail!(
+        "failed to allocate a temporary file name in {}",
+        parent.display()
+    );
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)
+        .with_context(|| format!("failed to open directory {}", path.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+struct TempPathGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for TempPathGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn test_context(dry_run: bool, cwd: &Path) -> AppContext {
+        AppContext {
+            cwd: cwd.to_path_buf(),
+            manifest_path: cwd.join("stellarforge.toml"),
+            globals: crate::cli::GlobalOptions {
+                cwd: Some(cwd.to_path_buf()),
+                dry_run,
+                ..Default::default()
+            },
+            client: reqwest::blocking::Client::builder()
+                .build()
+                .expect("test client should build"),
+        }
+    }
+
+    #[test]
+    fn write_text_keeps_dry_run_pure() {
+        let temp = tempdir().expect("tempdir should be created");
+        let context = test_context(true, temp.path());
+        let mut report = CommandReport::new("write-text");
+        let target = temp.path().join("nested").join("file.txt");
+
+        context
+            .write_text(&mut report, &target, "hello")
+            .expect("dry-run write should succeed");
+
+        assert_eq!(report.artifacts, vec![target.display().to_string()]);
+        assert!(!target.exists());
+        assert!(!target.parent().expect("target should have parent").exists());
+    }
+
+    #[test]
+    fn write_text_replaces_existing_file_atomically() {
+        let temp = tempdir().expect("tempdir should be created");
+        let context = test_context(false, temp.path());
+        let mut report = CommandReport::new("write-text");
+        let target = temp.path().join("nested").join("file.txt");
+
+        fs::create_dir_all(target.parent().expect("target should have parent"))
+            .expect("parent directory should be created");
+        fs::write(&target, "old").expect("seed file should be written");
+
+        context
+            .write_text(&mut report, &target, "new content")
+            .expect("write should succeed");
+
+        assert_eq!(report.artifacts, vec![target.display().to_string()]);
+        assert_eq!(
+            fs::read_to_string(&target).expect("target should be readable"),
+            "new content"
+        );
+        let entries = fs::read_dir(target.parent().expect("target should have parent"))
+            .expect("parent directory should be readable")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("directory entries should be readable");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path(), target);
+    }
 }
