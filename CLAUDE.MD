@@ -14,6 +14,18 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --locked
 ```
 
+## Harness: Stellar Forge Test Coverage
+
+**Goal:** Expand deterministic unit, contract, integration, E2E, idempotence, and resilience coverage for the CLI and generated workspaces.
+
+**Trigger:** For `stellar-forge` test coverage, harness, CI, contract tests, E2E, idempotence, dry-run purity, generated scaffold drift, or resilience work, use `.claude/skills/stellar-forge-test-harness-orchestrator/SKILL.md`. Simple questions can still be answered directly.
+
+**Change History:**
+| Date | Change | Target | Reason |
+| --- | --- | --- | --- |
+| 2026-05-31 | Added shared integration-test support helpers for fake Stellar workspaces | `tests/support`, selected integration suites | Keep offline E2E coverage deterministic and reduce duplicated setup drift |
+| 2026-05-31 | Added test harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Repo-wide deterministic test coverage and resilience work |
+
 ## Repo-Specific Reminders
 
 - `stellar-forge` is a Rust CLI that shells out to the official `stellar` CLI for network-facing work.
@@ -30,4 +42,3 @@ cargo test --locked
 - `src/runtime.rs`
 - `src/templates.rs`
 - `tests/`
-
