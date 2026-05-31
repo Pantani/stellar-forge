@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use assert_cmd::prelude::*;
 use std::fs;
 #[cfg(unix)]
@@ -10,7 +12,6 @@ pub fn init_rewards_project() -> PathBuf {
     init_project("rewards-loyalty", &[])
 }
 
-#[allow(dead_code)]
 pub fn init_minimal_contract_project() -> PathBuf {
     init_project("minimal-contract", &["--no-api"])
 }

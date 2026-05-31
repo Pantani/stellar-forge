@@ -23,6 +23,7 @@ cargo test --locked
 **Change History:**
 | Date | Change | Target | Reason |
 | --- | --- | --- | --- |
+| 2026-05-31 | Added generated workspace sync dry-run and repair coverage | `tests/generated_workspace_sync.rs`, `tests/support` | Prove scaffold drift can be previewed safely and repaired idempotently |
 | 2026-05-31 | Added shared integration-test support helpers for fake Stellar workspaces | `tests/support`, selected integration suites | Keep offline E2E coverage deterministic and reduce duplicated setup drift |
 | 2026-05-31 | Added test harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Repo-wide deterministic test coverage and resilience work |
 
