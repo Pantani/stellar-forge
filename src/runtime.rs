@@ -346,7 +346,7 @@ fn render_human(report: &CommandReport) -> String {
     lines.join("\n")
 }
 
-fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {
+pub(crate) fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let (mut temp_file, mut temp_guard) = create_temp_file(parent, path.file_name())?;
     temp_file.write_all(contents.as_bytes()).with_context(|| {

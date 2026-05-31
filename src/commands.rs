@@ -20,7 +20,9 @@ use crate::model::{
     Manifest, ManifestRef, NetworkConfig, ScenarioAssertion, ScenarioConfig, ScenarioStep,
     TokenConfig, WalletConfig, is_safe_name, parse_manifest_ref,
 };
-use crate::runtime::{AppContext, CommandReport, check, path_to_string, render_command};
+use crate::runtime::{
+    AppContext, CommandReport, check, path_to_string, render_command, write_text_atomic,
+};
 use crate::templates;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -80,7 +82,8 @@ pub(crate) fn persist_report_output(
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
     }
-    fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
+    write_text_atomic(path, &rendered)
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -604,7 +607,7 @@ fn project_smoke(context: &AppContext, args: &ProjectSmokeArgs) -> Result<Comman
 
     let package_manager = project_package_manager(&manifest, &root);
     ensure_supported_package_manager(&package_manager, "project smoke")?;
-    if !context.command_exists(&package_manager) {
+    if !context.globals.dry_run && !context.command_exists(&package_manager) {
         bail!(
             "package manager `{package_manager}` is not available on PATH; install it or update `project.package_manager`"
         );
@@ -2062,7 +2065,7 @@ fn manifest_digest(context: &AppContext) -> Result<String> {
     let manifest_bytes = fs::read(&context.manifest_path)
         .with_context(|| format!("failed to read {}", context.manifest_path.display()))?;
     let digest = Sha256::digest(&manifest_bytes);
-    Ok(format!("sha256:{:x}", digest))
+    Ok(format!("sha256:{}", hex_encode(&digest)))
 }
 
 fn normalize_event_cursors_value(value: Value) -> Value {
@@ -6023,14 +6026,25 @@ fn shouty(value: &str) -> String {
 fn hex_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    hex_encode(&digest)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut rendered = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        rendered.push(HEX[(byte >> 4) as usize] as char);
+        rendered.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    rendered
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         aggregate_status, amount_to_stroops, artifact_token, contract_fetch_output_path,
-        detect_package_manager, friendbot_url, package_manager_browser_smoke_command,
+        detect_package_manager, friendbot_url, hex_digest, package_manager_browser_smoke_command,
         package_manager_smoke_command, parse_alias_map, parse_binding_package_directory,
         project_sync_next_steps,
     };
@@ -6243,5 +6257,13 @@ name = "qux-main"
             "error"
         );
         assert_eq!(aggregate_status(&[check("tests", "ok", None)]), "ok");
+    }
+
+    #[test]
+    fn hex_digest_returns_lowercase_sha256() {
+        assert_eq!(
+            hex_digest(b"stellar-forge"),
+            "78090df27f00cd3d65b17e20cb21b2a910e3e5e8553a12e5b038c845fddf5c34"
+        );
     }
 }

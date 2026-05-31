@@ -79,6 +79,101 @@ fn init_writes_expected_project_scaffold() {
 }
 
 #[test]
+fn init_template_matrix_scaffolds_documented_module_shapes() {
+    let temp = tempdir().expect("tempdir should be created");
+    let empty_path = temp.path().join(".empty-path");
+    fs::create_dir_all(&empty_path).expect("empty PATH dir should be created");
+
+    for (name, template, extra_args, expected_paths, absent_paths, manifest_snippets) in [
+        (
+            "issuer",
+            "issuer-wallet",
+            Vec::<&str>::new(),
+            vec![
+                "apps/api/package.json",
+                "apps/web/package.json",
+                "apps/api/src/services/tokens/points.ts",
+            ],
+            vec!["contracts/app/Cargo.toml"],
+            vec![
+                "[wallets.issuer]",
+                "[wallets.treasury]",
+                "[tokens.points]",
+                "with_sac = true",
+            ],
+        ),
+        (
+            "merchant",
+            "merchant-checkout",
+            Vec::<&str>::new(),
+            vec![
+                "apps/api/package.json",
+                "apps/web/package.json",
+                "apps/api/src/services/tokens/points.ts",
+            ],
+            vec!["contracts/app/Cargo.toml"],
+            vec![
+                "[wallets.issuer]",
+                "[wallets.treasury]",
+                "[tokens.points]",
+                "clawback_enabled = true",
+            ],
+        ),
+        (
+            "service",
+            "api-only",
+            Vec::<&str>::new(),
+            vec!["apps/api/package.json", "apps/api/openapi.json"],
+            vec!["apps/web/package.json", "contracts/app/Cargo.toml"],
+            vec!["[api]", "enabled = true", "openapi = true"],
+        ),
+        (
+            "contracts",
+            "multi-contract",
+            vec!["--contracts", "2", "--no-api"],
+            vec!["contracts/app/Cargo.toml", "contracts/escrow/Cargo.toml"],
+            vec![
+                "apps/api/package.json",
+                "apps/web/package.json",
+                "contracts/contract-3/Cargo.toml",
+            ],
+            vec!["[contracts.app]", "[contracts.escrow]"],
+        ),
+    ] {
+        let mut args = vec!["init", name, "--template", template];
+        args.extend(extra_args);
+        Command::cargo_bin("stellar-forge")
+            .expect("binary should build")
+            .current_dir(temp.path())
+            .env("PATH", &empty_path)
+            .args(args)
+            .assert()
+            .success();
+
+        let root = temp.path().join(name);
+        for path in expected_paths {
+            assert!(
+                root.join(path).exists(),
+                "expected `{template}` to create `{path}`"
+            );
+        }
+        for path in absent_paths {
+            assert!(
+                !root.join(path).exists(),
+                "expected `{template}` not to create `{path}`"
+            );
+        }
+        let manifest = read(root.join("stellarforge.toml"));
+        for snippet in manifest_snippets {
+            assert!(
+                manifest.contains(snippet),
+                "expected `{template}` manifest to contain `{snippet}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn init_install_rejects_unsupported_package_manager() {
     let temp = tempdir().expect("tempdir should be created");
     let bin = std::env::var_os("CARGO_BIN_EXE_stellar-forge")
@@ -927,6 +1022,38 @@ fn project_smoke_dry_run_reports_frontend_smoke_command() {
 }
 
 #[test]
+fn project_smoke_dry_run_does_not_require_package_manager_on_path() {
+    let root = init_rewards_project();
+    let empty_path = root.join(".empty-path");
+    fs::create_dir_all(&empty_path).expect("empty PATH dir should be created");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", &empty_path)
+        .args(["--json", "--dry-run", "project", "smoke"])
+        .output()
+        .expect("command should run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "project.smoke");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["data"]["package_manager"], "pnpm");
+    assert!(
+        json["commands"]
+            .as_array()
+            .expect("commands should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("pnpm --dir apps/web 'smoke:ui'"))
+    );
+}
+
+#[test]
 fn project_smoke_browser_dry_run_reports_frontend_browser_smoke_command() {
     let root = init_rewards_project();
 
@@ -1395,6 +1522,49 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     assert!(generated_state.contains("stellarState"));
     assert!(smoke_runner.contains("UI smoke passed"));
     assert!(browser_smoke_runner.contains("browser smoke passed"));
+}
+
+#[test]
+fn project_sync_is_content_idempotent_for_generated_artifacts() {
+    let root = init_rewards_project();
+    let generated_paths = [
+        root.join(".env.example"),
+        root.join("apps/api/.env.example"),
+        root.join("apps/api/openapi.json"),
+        root.join("apps/api/src/lib/manifest.ts"),
+        root.join("apps/api/src/services/contracts/rewards.ts"),
+        root.join("apps/api/src/services/tokens/points.ts"),
+        root.join("apps/web/src/generated/stellar.ts"),
+        root.join("apps/web/scripts/ui-smoke.mjs"),
+        root.join("apps/web/scripts/ui-browser-smoke.mjs"),
+    ];
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["project", "sync"])
+        .assert()
+        .success();
+    let first = generated_paths
+        .iter()
+        .map(|path| (path.clone(), read(path)))
+        .collect::<Vec<_>>();
+
+    Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["project", "sync"])
+        .assert()
+        .success();
+
+    for (path, previous_contents) in first {
+        assert_eq!(
+            read(&path),
+            previous_contents,
+            "expected {} to remain unchanged across repeated project sync runs",
+            path.display()
+        );
+    }
 }
 
 #[test]

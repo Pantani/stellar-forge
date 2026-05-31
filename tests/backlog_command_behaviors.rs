@@ -1,19 +1,25 @@
 use assert_cmd::prelude::*;
 use serde_json::Value;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
+
+mod support;
+
+use support::{
+    init_minimal_contract_project, init_rewards_project, install_fake_stellar, test_path,
+};
 
 #[test]
 fn wallet_smart_policy_apply_reads_file_and_builds_all_operations() {
     let root = init_rewards_project();
+    let fake_bin = install_fake_stellar(&root);
 
     Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
         .args(["wallet", "smart", "create", "sentinel", "--mode", "ed25519"])
         .assert()
         .success();
@@ -32,6 +38,7 @@ build_only = true
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
         .args([
             "--json",
             "--dry-run",
@@ -711,78 +718,6 @@ fn doctor_env_deps_project_and_network_write_reports_to_out_paths() {
     let network_file: Value =
         serde_json::from_str(&read(&network_out)).expect("network out should parse");
     assert_eq!(network_file["action"], "doctor.network");
-}
-
-fn init_rewards_project() -> PathBuf {
-    let temp = tempdir().expect("tempdir should be created");
-    let kept = temp.keep();
-    let root = kept.join("demo");
-    let parent = root
-        .parent()
-        .expect("demo should have a parent")
-        .to_path_buf();
-    Command::cargo_bin("stellar-forge")
-        .expect("binary should build")
-        .current_dir(parent)
-        .args(["init", "demo", "--template", "rewards-loyalty"])
-        .assert()
-        .success();
-    root
-}
-
-fn init_minimal_contract_project() -> PathBuf {
-    let temp = tempdir().expect("tempdir should be created");
-    let kept = temp.keep();
-    let root = kept.join("demo");
-    let parent = root
-        .parent()
-        .expect("demo should have a parent")
-        .to_path_buf();
-    Command::cargo_bin("stellar-forge")
-        .expect("binary should build")
-        .current_dir(parent)
-        .args(["init", "demo", "--template", "minimal-contract", "--no-api"])
-        .assert()
-        .success();
-    root
-}
-
-fn install_fake_stellar(root: &Path) -> PathBuf {
-    let bin_dir = root.join(".test-bin");
-    fs::create_dir_all(&bin_dir).expect("bin dir should be created");
-    let script_path = bin_dir.join("stellar");
-    fs::write(
-        &script_path,
-        r#"#!/bin/sh
-if [ "$1" = "keys" ] && [ "$2" = "generate" ]; then
-  echo "generated $3"
-  exit 0
-fi
-if [ "$1" = "keys" ] && [ "$2" = "public-key" ]; then
-  echo "GFAKEPUBLICKEY"
-  exit 0
-fi
-if [ "$1" = "keys" ] && [ "$2" = "ls" ]; then
-  echo "alice GFAKEPUBLICKEY"
-  exit 0
-fi
-echo "unsupported fake stellar invocation: $@" >&2
-exit 1
-"#,
-    )
-    .expect("fake stellar should be written");
-    #[cfg(unix)]
-    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
-        .expect("fake stellar should be executable");
-    bin_dir
-}
-
-fn test_path(fake_bin: &Path) -> String {
-    format!(
-        "{}:{}",
-        fake_bin.display(),
-        std::env::var("PATH").expect("PATH should exist")
-    )
 }
 
 fn seed_testnet_release_lockfile(root: &Path) {

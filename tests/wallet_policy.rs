@@ -1,11 +1,11 @@
 use assert_cmd::prelude::*;
 use serde_json::Value;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::process::Command;
-use tempfile::tempdir;
+
+mod support;
+
+use support::{init_rewards_project, install_fake_stellar, test_path};
 
 #[test]
 fn wallet_smart_policy_info_uses_active_identity_for_passkey_wallets() {
@@ -55,10 +55,12 @@ fn wallet_smart_policy_info_uses_active_identity_for_passkey_wallets() {
 #[test]
 fn wallet_smart_policy_set_daily_limit_build_only_uses_controller_identity() {
     let root = init_rewards_project();
+    let fake_bin = install_fake_stellar(&root);
 
     Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
         .args(["wallet", "smart", "create", "sentinel", "--mode", "ed25519"])
         .assert()
         .success();
@@ -66,6 +68,7 @@ fn wallet_smart_policy_set_daily_limit_build_only_uses_controller_identity() {
     let output = Command::cargo_bin("stellar-forge")
         .expect("binary should build")
         .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
         .args([
             "--json",
             "--dry-run",
@@ -384,61 +387,4 @@ fn wallet_smart_info_uses_manifest_policy_contract_path() {
             .to_string()
     );
     assert_eq!(json["data"]["policy_contract"]["exists"], true);
-}
-
-fn init_rewards_project() -> std::path::PathBuf {
-    let temp = tempdir().expect("tempdir should be created");
-    let kept = temp.keep();
-    let root = kept.join("demo");
-    let parent = root
-        .parent()
-        .expect("demo should have a parent")
-        .to_path_buf();
-    Command::cargo_bin("stellar-forge")
-        .expect("binary should build")
-        .current_dir(parent)
-        .args(["init", "demo", "--template", "rewards-loyalty"])
-        .assert()
-        .success();
-    root
-}
-
-fn install_fake_stellar(root: &Path) -> std::path::PathBuf {
-    let bin_dir = root.join(".test-bin");
-    fs::create_dir_all(&bin_dir).expect("bin dir should be created");
-    let script_path = bin_dir.join("stellar");
-    fs::write(
-        &script_path,
-        r#"#!/bin/sh
-if [ "$1" = "keys" ] && [ "$2" = "generate" ]; then
-  echo "generated $3"
-  exit 0
-fi
-if [ "$1" = "keys" ] && [ "$2" = "public-key" ]; then
-  case "$3" in
-    alice|issuer|treasury)
-      echo "GFAKEPUBLICKEY"
-      exit 0
-      ;;
-  esac
-  echo "missing key $3" >&2
-  exit 1
-fi
-echo "unsupported fake stellar invocation: $@" >&2
-exit 1
-"#,
-    )
-    .expect("fake stellar should be written");
-    #[cfg(unix)]
-    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))
-        .expect("fake stellar should be executable");
-    bin_dir
-}
-
-fn test_path(fake_bin: &Path) -> String {
-    format!(
-        "{}:{}",
-        fake_bin.display(),
-        std::env::var("PATH").expect("PATH should exist")
-    )
 }

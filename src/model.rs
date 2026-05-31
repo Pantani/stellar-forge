@@ -481,12 +481,12 @@ impl Manifest {
                         ..
                     }
                     | ScenarioStep::ContractDeploy { contract, .. }
-                    | ScenarioStep::ContractCall { contract, .. } => {
-                        if !self.contracts.contains_key(contract) {
-                            errors.push(format!(
-                                "scenario `{name}` references missing contract `{contract}`"
-                            ));
-                        }
+                    | ScenarioStep::ContractCall { contract, .. }
+                        if !self.contracts.contains_key(contract) =>
+                    {
+                        errors.push(format!(
+                            "scenario `{name}` references missing contract `{contract}`"
+                        ));
                     }
                     _ => {}
                 }
@@ -500,12 +500,12 @@ impl Manifest {
                 match step {
                     ScenarioStep::ReleasePlan { env: Some(env) }
                     | ScenarioStep::ReleaseVerify { env: Some(env) }
-                    | ScenarioStep::ContractDeploy { env: Some(env), .. } => {
-                        if !self.networks.contains_key(env) {
-                            errors.push(format!(
-                                "scenario `{name}` references missing network `{env}`"
-                            ));
-                        }
+                    | ScenarioStep::ContractDeploy { env: Some(env), .. }
+                        if !self.networks.contains_key(env) =>
+                    {
+                        errors.push(format!(
+                            "scenario `{name}` references missing network `{env}`"
+                        ));
                     }
                     _ => {}
                 }
@@ -759,6 +759,7 @@ mod tests {
             project: ProjectConfig {
                 name: "demo".to_string(),
                 slug: "demo".to_string(),
+                package_manager: "pnpm".to_string(),
                 ..ProjectConfig::default()
             },
             defaults: super::DefaultsConfig {
@@ -871,5 +872,113 @@ mod tests {
         assert!(errors.iter().any(|error| {
             error.contains("release target key `../prod` must be a single filesystem-safe name")
         }));
+    }
+
+    #[test]
+    fn manifest_validation_reports_reference_and_scenario_errors() {
+        let root = tempdir().expect("tempdir should be created");
+        let manifest = Manifest {
+            project: ProjectConfig {
+                name: "demo".to_string(),
+                slug: "demo".to_string(),
+                ..ProjectConfig::default()
+            },
+            defaults: super::DefaultsConfig {
+                network: "missing-net".to_string(),
+                identity: "missing-id".to_string(),
+                ..super::DefaultsConfig::default()
+            },
+            wallets: BTreeMap::from([
+                (
+                    "classic".to_string(),
+                    WalletConfig {
+                        kind: "classic".to_string(),
+                        identity: "missing-id".to_string(),
+                        ..WalletConfig::default()
+                    },
+                ),
+                (
+                    "smart".to_string(),
+                    WalletConfig {
+                        kind: "smart".to_string(),
+                        controller_identity: Some("missing-controller".to_string()),
+                        policy_contract: Some("missing-policy".to_string()),
+                        ..WalletConfig::default()
+                    },
+                ),
+            ]),
+            tokens: BTreeMap::from([(
+                "credits".to_string(),
+                super::TokenConfig {
+                    kind: "contract".to_string(),
+                    issuer: "@identity:../issuer".to_string(),
+                    distribution: "@wallet:missing-wallet".to_string(),
+                    ..super::TokenConfig::default()
+                },
+            )]),
+            scenarios: BTreeMap::from([
+                ("empty".to_string(), super::ScenarioConfig::default()),
+                (
+                    "broken".to_string(),
+                    super::ScenarioConfig {
+                        network: Some("missing-scenario-net".to_string()),
+                        identity: Some("missing-scenario-id".to_string()),
+                        steps: vec![
+                            super::ScenarioStep::ContractDeploy {
+                                contract: "missing-contract".to_string(),
+                                env: Some("missing-step-net".to_string()),
+                            },
+                            super::ScenarioStep::TokenMint {
+                                token: "missing-token".to_string(),
+                                to: "classic".to_string(),
+                                amount: "1".to_string(),
+                                from: None,
+                            },
+                        ],
+                        assertions: vec![
+                            super::ScenarioAssertion::Status {
+                                status: "maybe".to_string(),
+                            },
+                            super::ScenarioAssertion::Step {
+                                step: 3,
+                                status: None,
+                                command_contains: Vec::new(),
+                                artifact_contains: Vec::new(),
+                                warning_contains: Vec::new(),
+                            },
+                        ],
+                        ..super::ScenarioConfig::default()
+                    },
+                ),
+            ]),
+            ..Manifest::default()
+        };
+
+        let errors = manifest.validate(root.path());
+        for expected in [
+            "defaults.network references missing network `missing-net`",
+            "defaults.identity references missing identity `missing-id`",
+            "wallet `classic` references missing identity `missing-id`",
+            "smart wallet `smart` is missing `mode`",
+            "smart wallet `smart` references missing controller identity `missing-controller`",
+            "smart wallet `smart` references missing policy contract `missing-policy`",
+            "token `credits` references unsafe identity `../issuer`",
+            "token `credits` references missing wallet `missing-wallet`",
+            "token `credits` is declared as a contract token but no matching contract `credits` exists in the manifest",
+            "scenario `empty` must declare at least one step",
+            "scenario `broken` references missing network `missing-scenario-net`",
+            "scenario `broken` references missing identity `missing-scenario-id`",
+            "scenario `broken` references missing contract `missing-contract`",
+            "scenario `broken` references missing token `missing-token`",
+            "scenario `broken` references missing network `missing-step-net`",
+            "scenario `broken` assertion status `maybe` must be one of ok, warn, or error",
+            "scenario `broken` assertion references missing step `3`",
+            "scenario `broken` step assertion for step `3` must declare at least one expectation",
+        ] {
+            assert!(
+                errors.iter().any(|error| error == expected),
+                "expected `{expected}` in {errors:?}"
+            );
+        }
     }
 }
