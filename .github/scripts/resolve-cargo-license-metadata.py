@@ -27,11 +27,12 @@ def main() -> None:
     package = metadata["packages"][0]
     package_license = package.get("license") or ""
     package_license_file = package.get("license_file") or ""
-    package_license_declared = "true" if package_license or package_license_file else "false"
+    if not package_license and not package_license_file:
+        raise SystemExit("Cargo package metadata must declare license or license_file")
 
     print(package_license)
     print(package_license_file)
-    print(package_license_declared)
+    print("true")
 
 
 if __name__ == "__main__":

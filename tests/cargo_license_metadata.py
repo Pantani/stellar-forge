@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -13,24 +14,29 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "resolve-cargo-license-metadata.py"
 
 
-def resolve(package: dict[str, str]) -> list[str]:
+def resolve(package: dict[str, str]) -> subprocess.CompletedProcess[str]:
     metadata = {"packages": [package]}
     with tempfile.TemporaryDirectory() as tmp:
         metadata_path = Path(tmp) / "metadata.json"
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-        result = subprocess.run(
-            ["python3", str(SCRIPT), "--metadata-json", str(metadata_path)],
-            check=True,
+        return subprocess.run(  # noqa: S603
+            [sys.executable, str(SCRIPT), "--metadata-json", str(metadata_path)],
             text=True,
             capture_output=True,
         )
-    return result.stdout.splitlines()
 
 
 def main() -> None:
-    assert resolve({"license": "MIT"}) == ["MIT", "", "true"]
-    assert resolve({"license_file": "LICENSE"}) == ["", "LICENSE", "true"]
-    assert resolve({}) == ["", "", "false"]
+    result = resolve({"license": "MIT"})
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["MIT", "", "true"]
+
+    result = resolve({"license_file": "LICENSE"})
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["", "LICENSE", "true"]
+
+    result = resolve({})
+    assert result.returncode != 0
 
 
 if __name__ == "__main__":

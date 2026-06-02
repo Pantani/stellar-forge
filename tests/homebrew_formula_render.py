@@ -49,6 +49,9 @@ def main() -> None:
         formula = output.read_text(encoding="utf-8")
         assert "class StellarForge < Formula" in formula
         assert 'license "MIT"' in formula
+        for index in range(len(targets)):
+            checksum = f"{index + 1:064x}"
+            assert f'sha256 "{checksum}"' in formula
         assert "aarch64-apple-darwin.tar.gz" in formula
         assert "x86_64-apple-darwin.tar.gz" in formula
         assert "x86_64-unknown-linux-gnu.tar.gz" in formula

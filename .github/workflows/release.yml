@@ -3,7 +3,7 @@ name: Release binaries
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -241,10 +241,18 @@ jobs:
             test -s "release-assets/${archive}.sha256"
           done
 
-          mapfile -t package_license_metadata < <(python3 .github/scripts/resolve-cargo-license-metadata.py)
-          package_license="${package_license_metadata[0]:-}"
-          package_license_file="${package_license_metadata[1]:-}"
-          package_license_declared="${package_license_metadata[2]:-false}"
+          license_metadata_path="$(mktemp)"
+          if python3 .github/scripts/resolve-cargo-license-metadata.py > "${license_metadata_path}"; then
+            mapfile -t package_license_metadata < "${license_metadata_path}"
+            package_license="${package_license_metadata[0]:-}"
+            package_license_file="${package_license_metadata[1]:-}"
+            package_license_declared="${package_license_metadata[2]:-false}"
+          else
+            package_license=""
+            package_license_file=""
+            package_license_declared=false
+          fi
+          rm -f "${license_metadata_path}"
 
           cargo_publish_ready=false
           linux_publish_ready=false
