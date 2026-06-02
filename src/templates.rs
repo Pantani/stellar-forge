@@ -2169,8 +2169,17 @@ const expectedSections = ['Queue', 'Runtime', 'Events', 'Contracts', 'Tokens'];
 function isIgnorableRuntimeNoise(message) {
   return (
     message.includes('[DEP0169] DeprecationWarning') ||
-    message.includes('url.parse() behavior is not standardized')
+    message.includes('url.parse() behavior is not standardized') ||
+    message === 'Failed to load resource: the server responded with a status of 404 (Not Found)'
   );
+}
+
+function isIgnorableFailedResponse(response) {
+  try {
+    return new URL(response.url()).pathname === '/favicon.ico';
+  } catch (_error) {
+    return false;
+  }
 }
 
 test('generated frontend renders expected sections without browser errors', async ({ page }) => {
@@ -2191,7 +2200,7 @@ test('generated frontend renders expected sections without browser errors', asyn
     }
   });
   page.on('response', (response) => {
-    if (response.status() >= 400) {
+    if (response.status() >= 400 && !isIgnorableFailedResponse(response)) {
       failedResponses.push(\`\${response.status()} \${response.url()}\`);
     }
   });
