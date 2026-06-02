@@ -70,7 +70,6 @@ pub(crate) fn persist_report_output(
         }
         Some(_) => {}
     }
-    let rendered = serde_json::to_string_pretty(report)?;
     if !report
         .artifacts
         .iter()
@@ -78,6 +77,7 @@ pub(crate) fn persist_report_output(
     {
         report.artifacts.push(path.display().to_string());
     }
+    let rendered = serde_json::to_string_pretty(report)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create parent directory {}", parent.display()))?;

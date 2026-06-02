@@ -16,13 +16,14 @@ cargo test --locked
 
 ## Harness: Stellar Forge Test Coverage
 
-**Goal:** Expand deterministic unit, contract, integration, E2E, idempotence, and resilience coverage for the CLI and generated workspaces.
+**Goal:** Expand deterministic unit, contract, integration, E2E, idempotence, heavy local, live/manual, and resilience coverage for the CLI and generated workspaces.
 
-**Trigger:** For `stellar-forge` test coverage, harness, CI, contract tests, E2E, idempotence, dry-run purity, generated scaffold drift, or resilience work, use `.claude/skills/stellar-forge-test-harness-orchestrator/SKILL.md`. Simple questions can still be answered directly.
+**Trigger:** For `stellar-forge` test coverage, harness, CI, contract tests, E2E, heavy integration, "testes de verdade", real generated app validation, live Stellar CLI, Docker/local network, testnet, idempotence, dry-run purity, generated scaffold drift, or resilience work, use `.claude/skills/stellar-forge-test-harness-orchestrator/SKILL.md`. Simple questions can still be answered directly.
 
 **Change History:**
 | Date | Change | Target | Reason |
 | --- | --- | --- | --- |
+| 2026-06-02 | Added heavy integration and live/manual smoke specialists | `.claude/agents`, `.claude/skills`, `docs/testing-strategy.md` | Separate real-tool confidence from deterministic PR coverage |
 | 2026-05-31 | Added generated workspace sync dry-run and repair coverage | `tests/generated_workspace_sync.rs`, `tests/support` | Prove scaffold drift can be previewed safely and repaired idempotently |
 | 2026-05-31 | Added shared integration-test support helpers for fake Stellar workspaces | `tests/support`, selected integration suites | Keep offline E2E coverage deterministic and reduce duplicated setup drift |
 | 2026-05-31 | Added test harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Repo-wide deterministic test coverage and resilience work |

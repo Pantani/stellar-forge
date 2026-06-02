@@ -47,6 +47,10 @@ If you are touching generated project output, also read:
 - [src/templates.rs](src/templates.rs)
 - [demo/README.md](demo/README.md)
 
+If you are planning broad validation or release-confidence work, read:
+
+- [docs/testing-strategy.md](docs/testing-strategy.md)
+
 ## Repo map
 
 These files are the fastest way to orient yourself:
@@ -134,6 +138,8 @@ Suggested rule of thumb:
 - shared model, runtime, template, or report changes: run `cargo fmt`, targeted tests, and
   preferably `cargo clippy`
 - generated frontend or scaffold changes: also consider the browser smoke path
+- broad release-confidence work: use [docs/testing-strategy.md](docs/testing-strategy.md) to separate
+  PR-safe offline, heavy local, and live/manual validation
 
 ## What to update for each kind of change
 
