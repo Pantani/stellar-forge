@@ -173,6 +173,8 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       package_license: ${{ steps.check.outputs.package_license }}
+      package_license_file: ${{ steps.check.outputs.package_license_file }}
+      package_license_declared: ${{ steps.check.outputs.package_license_declared }}
       cargo_publish_ready: ${{ steps.check.outputs.cargo_publish_ready }}
       homebrew_tap_ready: ${{ steps.check.outputs.homebrew_tap_ready }}
       homebrew_tap_repo: ${{ steps.check.outputs.homebrew_tap_repo }}
@@ -239,38 +241,30 @@ jobs:
             test -s "release-assets/${archive}.sha256"
           done
 
-          package_license="$(python3 - <<'PY'
-          import json
-          import subprocess
-
-          metadata = subprocess.check_output(
-              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-              text=True,
-          )
-          package = json.loads(metadata)["packages"][0]
-          print(package.get("license") or "")
-          PY
-          )"
+          mapfile -t package_license_metadata < <(python3 .github/scripts/resolve-cargo-license-metadata.py)
+          package_license="${package_license_metadata[0]:-}"
+          package_license_file="${package_license_metadata[1]:-}"
+          package_license_declared="${package_license_metadata[2]:-false}"
 
           cargo_publish_ready=false
           linux_publish_ready=false
-          if [[ -n "${package_license}" ]]; then
+          if [[ "${package_license_declared}" == "true" ]]; then
             cargo_publish_ready=true
           else
             echo "::notice::crates.io, .deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
           fi
 
-          if [[ -n "${package_license}" ]]; then
+          if [[ "${package_license_declared}" == "true" ]]; then
             linux_publish_ready=true
           else
             echo "::notice::.deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
           fi
 
           homebrew_tap_ready=false
-          if [[ -n "${package_license}" ]] && gh repo view "${HOMEBREW_TAP_REPO}" >/dev/null 2>&1; then
+          if [[ "${package_license_declared}" == "true" ]] && gh repo view "${HOMEBREW_TAP_REPO}" >/dev/null 2>&1; then
             homebrew_tap_ready=true
           else
-            echo "::notice::Homebrew formula artifact will be generated, but tap PR is disabled until Cargo.toml declares a license and ${HOMEBREW_TAP_REPO} exists."
+            echo "::notice::Homebrew formula artifact will be generated, but tap PR is disabled until Cargo.toml declares a license or license-file and ${HOMEBREW_TAP_REPO} exists."
           fi
 
           snap_publish_ready=false
@@ -283,6 +277,8 @@ jobs:
           {
             echo "version=${version}"
             echo "package_license=${package_license}"
+            echo "package_license_file=${package_license_file}"
+            echo "package_license_declared=${package_license_declared}"
             echo "cargo_publish_ready=${cargo_publish_ready}"
             echo "homebrew_tap_ready=${homebrew_tap_ready}"
             echo "homebrew_tap_repo=${HOMEBREW_TAP_REPO}"

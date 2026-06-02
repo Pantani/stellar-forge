@@ -57,7 +57,7 @@ The publish preflight validates:
 - `Cargo.toml` version matches the tag without the `v`
 - `CHANGELOG.md` has a section for the version
 - expected release archives and `.sha256` files exist
-- package license metadata exists
+- package license metadata exists through `license` or `license-file`
 - `Pantani/homebrew-tap` or `HOMEBREW_TAP_REPO` exists
 - `snap/snapcraft.yaml` exists
 
