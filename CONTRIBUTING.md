@@ -81,7 +81,9 @@ CI currently runs:
 ```bash
 cargo fmt --all --check
 cargo check --locked --all-targets --all-features
+cargo build --locked --bin stellar-forge
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --test cli_command_matrix
 cargo test --locked
 node scripts/generated-frontend-browser-smoke.mjs
 cargo audit
@@ -111,6 +113,7 @@ Useful patterns:
 
 ```bash
 cargo test --locked --test cli
+cargo test --locked --test cli_command_matrix
 cargo test --locked --test release_commands
 cargo test --locked --test wallet_policy
 cargo test --locked --test events_backfill

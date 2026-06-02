@@ -41,10 +41,16 @@ jobs:
       - name: Check compilation
         run: cargo check --locked --all-targets --all-features
 
+      - name: Build CLI binary
+        run: cargo build --locked --bin stellar-forge
+
       - name: Run clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-      - name: Run tests
+      - name: Run CLI command matrix integration tests
+        run: cargo test --locked --test cli_command_matrix
+
+      - name: Run full test suite
         run: cargo test --locked
 
   generated-frontend-smoke:
