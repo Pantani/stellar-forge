@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.home }}/.cache/ms-playwright
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     steps:
       - name: Checkout
         uses: actions/checkout@v6
