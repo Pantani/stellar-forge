@@ -3749,6 +3749,11 @@ fn sync_frontend_scaffold(
     )?;
     context.write_text(
         report,
+        &web_root.join("pnpm-workspace.yaml"),
+        templates::web_pnpm_workspace_yaml(),
+    )?;
+    context.write_text(
+        report,
         &web_root.join("index.html"),
         templates::web_index_html(),
     )?;

@@ -1709,6 +1709,10 @@ pub fn web_package_json() -> &'static str {
     "{\n  \"name\": \"@stellar-forge/web\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"build\": \"vite build\",\n    \"preview\": \"vite preview\",\n    \"smoke:ui\": \"node scripts/ui-smoke.mjs\",\n    \"smoke:browser\": \"node scripts/ui-browser-smoke.mjs\",\n    \"smoke:browser:build\": \"node scripts/ui-browser-smoke.mjs build\",\n    \"smoke:browser:install\": \"node scripts/ui-browser-smoke.mjs install\",\n    \"smoke:browser:run\": \"node scripts/ui-browser-smoke.mjs run\"\n  },\n  \"dependencies\": {\n    \"react\": \"^19.0.0\",\n    \"react-dom\": \"^19.0.0\"\n  },\n  \"devDependencies\": {\n    \"@vitejs/plugin-react\": \"^5.0.4\",\n    \"typescript\": \"^5.9.3\",\n    \"vite\": \"^7.1.11\"\n  }\n}\n"
 }
 
+pub fn web_pnpm_workspace_yaml() -> &'static str {
+    "allowBuilds:\n  esbuild: true\n"
+}
+
 pub fn web_ui_smoke_runner() -> &'static str {
     r####"#!/usr/bin/env node
 import { spawn } from 'node:child_process';
