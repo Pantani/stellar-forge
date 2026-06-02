@@ -1,0 +1,32 @@
+name: stellar-forge
+title: Stellar Forge
+base: core24
+version: "0.0.0"
+summary: Manifest-driven Stellar workspace CLI
+description: |
+  Rust CLI for manifest-driven Stellar workspaces, scaffolding, validation,
+  dry-runs, release planning, and generated project tooling on top of the
+  official Stellar CLI.
+
+grade: stable
+confinement: classic
+license: MIT
+
+# Classic confinement is required because stellar-forge shells out to host
+# developer tools such as stellar, cargo, Node.js package managers, Docker, and
+# sqlite3, and it creates files in user-chosen workspace directories.
+parts:
+  stellar-forge:
+    plugin: rust
+    source: .
+    rust-channel: stable
+
+apps:
+  stellar-forge:
+    command: bin/stellar-forge
+    environment:
+      PATH: "$SNAP/bin:$PATH"
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64

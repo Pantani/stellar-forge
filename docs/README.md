@@ -14,6 +14,8 @@ question.
 4. [Deployment guide](deployment-guide.md) for local/testnet/pubnet release workflows, verification,
    rollback, and drift recovery
 5. [Testing strategy](testing-strategy.md) for PR-safe, heavy local, and live/manual validation tiers
+6. [Release publishing](release-publishing.md) for package-manager CI, secrets, environments, and
+   channel reruns
 
 ## Which Doc Should I Read?
 
@@ -24,6 +26,7 @@ question.
 | understand how the manifest drives the workspace | [manifest-reference.md](manifest-reference.md) | it explains the config model and file relationships |
 | ship a release safely | [deployment-guide.md](deployment-guide.md) | it focuses on plan, deploy, verify, artifacts, and recovery |
 | choose the right validation tier | [testing-strategy.md](testing-strategy.md) | it separates deterministic PR tests from heavy local and live/manual checks |
+| publish `stellar-forge` through package managers | [release-publishing.md](release-publishing.md) | it covers release CI, crates.io, Homebrew, APT, Snap, secrets, and reruns |
 | debug drift between manifest, lockfile, and generated outputs | [manifest-reference.md](manifest-reference.md#which-commands-update-which-files) | it shows what each command is expected to rewrite |
 | recover from a broken or stale deploy snapshot | [deployment-guide.md](deployment-guide.md#using-status-drift-diff-history-and-inspect-together) | it explains the release history and comparison commands |
 | prepare CI-friendly report files | [command-reference.md](command-reference.md#how-to-use-this-reference) | it covers `--json`, `--out`, and report anatomy |

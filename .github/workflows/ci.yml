@@ -44,6 +44,11 @@ jobs:
       - name: Build CLI binary
         run: cargo build --locked --bin stellar-forge
 
+      - name: Test release helper scripts
+        run: |
+          python3 tests/homebrew_formula_render.py
+          python3 tests/cargo_license_metadata.py
+
       - name: Run clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 

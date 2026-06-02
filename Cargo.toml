@@ -2,6 +2,30 @@
 name = "stellar-forge"
 version = "0.1.0"
 edition = "2024"
+authors = ["Pantani"]
+description = "Rust CLI for manifest-driven Stellar workspaces, scaffolding, validation, dry-runs, release planning, and generated project tooling."
+license = "MIT"
+repository = "https://github.com/Pantani/stellar-forge"
+homepage = "https://github.com/Pantani/stellar-forge"
+readme = "README.md"
+keywords = ["stellar", "soroban", "cli", "web3", "scaffold"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".claude/**", ".github/**", "_workspace/**", "AGENTS.MD", "CLAUDE.MD"]
+
+[package.metadata.deb]
+maintainer = "Pantani <pantani@users.noreply.github.com>"
+copyright = "2026 Pantani, MIT"
+license-file = ["LICENSE", "0"]
+extended-description = "stellar-forge orchestrates manifest-driven Stellar workspaces, generated project scaffolds, diagnostics, dry-runs, lockfiles, and release planning on top of the official Stellar CLI."
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+  ["target/release/stellar-forge", "usr/bin/", "755"],
+  ["README.md", "usr/share/doc/stellar-forge/README.md", "644"],
+  ["CHANGELOG.md", "usr/share/doc/stellar-forge/CHANGELOG.md", "644"],
+  ["LICENSE", "usr/share/doc/stellar-forge/LICENSE", "644"],
+]
 
 [dependencies]
 anyhow = "1.0.100"

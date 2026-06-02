@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   BINARY_NAME: stellar-forge
@@ -34,6 +34,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -48,7 +50,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
             echo "Release tag must look like vMAJOR.MINOR.PATCH, got ${RELEASE_TAG}" >&2
             exit 1
           fi
@@ -63,6 +65,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+
+      - name: Install Linux ARM64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p "${HOME}/.cargo"
+          cat >> "${HOME}/.cargo/config.toml" <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
 
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }} --bin ${{ env.BINARY_NAME }}
@@ -79,7 +94,7 @@ jobs:
           mkdir -p "dist/${package}"
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "dist/${package}/${BINARY_NAME}"
           chmod 0755 "dist/${package}/${BINARY_NAME}"
-          cp README.md CHANGELOG.md "dist/${package}/"
+          cp README.md CHANGELOG.md LICENSE "dist/${package}/"
 
           tar -czf "${archive}" -C dist "${package}"
           if command -v shasum >/dev/null 2>&1; then
@@ -102,6 +117,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: package
     timeout-minutes: 10
+    environment: github-release
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -146,3 +164,486 @@ jobs:
           body_path: release-notes.md
           files: release-assets/*
           fail_on_unmatched_files: true
+
+  publish-preflight:
+    name: Publish preflight
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      package_license: ${{ steps.check.outputs.package_license }}
+      package_license_file: ${{ steps.check.outputs.package_license_file }}
+      package_license_declared: ${{ steps.check.outputs.package_license_declared }}
+      cargo_publish_ready: ${{ steps.check.outputs.cargo_publish_ready }}
+      homebrew_tap_ready: ${{ steps.check.outputs.homebrew_tap_ready }}
+      homebrew_tap_repo: ${{ steps.check.outputs.homebrew_tap_repo }}
+      cloudsmith_owner: ${{ steps.check.outputs.cloudsmith_owner }}
+      cloudsmith_repo: ${{ steps.check.outputs.cloudsmith_repo }}
+      linux_publish_ready: ${{ steps.check.outputs.linux_publish_ready }}
+      snap_publish_ready: ${{ steps.check.outputs.snap_publish_ready }}
+      snap_channel: ${{ steps.check.outputs.snap_channel }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'Pantani/homebrew-tap' }}
+      CLOUDSMITH_OWNER: ${{ vars.CLOUDSMITH_OWNER || 'pantani' }}
+      CLOUDSMITH_REPO: ${{ vars.CLOUDSMITH_REPO || 'stellar-forge' }}
+      SNAP_CHANNEL: ${{ vars.SNAP_CHANNEL || 'stable' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Download packaged archives
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate package-manager publish readiness
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like vMAJOR.MINOR.PATCH, got ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          cargo_version="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          metadata = subprocess.check_output(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              text=True,
+          )
+          package = json.loads(metadata)["packages"][0]
+          print(package["version"])
+          PY
+          )"
+          if [[ "${cargo_version}" != "${version}" ]]; then
+            echo "Cargo.toml version ${cargo_version} does not match ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          if ! grep -Eq "^## ${version}([[:space:]]|-|$)" CHANGELOG.md; then
+            echo "CHANGELOG.md is missing a ${version} section" >&2
+            exit 1
+          fi
+
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+            archive="${BINARY_NAME}-${version}-${target}.tar.gz"
+            test -s "release-assets/${archive}"
+            test -s "release-assets/${archive}.sha256"
+          done
+
+          license_metadata_path="$(mktemp)"
+          if python3 .github/scripts/resolve-cargo-license-metadata.py > "${license_metadata_path}"; then
+            mapfile -t package_license_metadata < "${license_metadata_path}"
+            package_license="${package_license_metadata[0]:-}"
+            package_license_file="${package_license_metadata[1]:-}"
+            package_license_declared="${package_license_metadata[2]:-false}"
+          else
+            package_license=""
+            package_license_file=""
+            package_license_declared=false
+          fi
+          rm -f "${license_metadata_path}"
+
+          cargo_publish_ready=false
+          linux_publish_ready=false
+          if [[ "${package_license_declared}" == "true" ]]; then
+            cargo_publish_ready=true
+          else
+            echo "::notice::crates.io, .deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
+          fi
+
+          if [[ "${package_license_declared}" == "true" ]]; then
+            linux_publish_ready=true
+          else
+            echo "::notice::.deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
+          fi
+
+          homebrew_tap_ready=false
+          if [[ "${package_license_declared}" == "true" ]] && gh repo view "${HOMEBREW_TAP_REPO}" >/dev/null 2>&1; then
+            homebrew_tap_ready=true
+          else
+            echo "::notice::Homebrew formula artifact will be generated, but tap PR is disabled until Cargo.toml declares a license or license-file and ${HOMEBREW_TAP_REPO} exists."
+          fi
+
+          snap_publish_ready=false
+          if [[ -f snap/snapcraft.yaml ]]; then
+            snap_publish_ready=true
+          else
+            echo "::notice::Snap build is disabled until snap/snapcraft.yaml is configured."
+          fi
+
+          {
+            echo "version=${version}"
+            echo "package_license=${package_license}"
+            echo "package_license_file=${package_license_file}"
+            echo "package_license_declared=${package_license_declared}"
+            echo "cargo_publish_ready=${cargo_publish_ready}"
+            echo "homebrew_tap_ready=${homebrew_tap_ready}"
+            echo "homebrew_tap_repo=${HOMEBREW_TAP_REPO}"
+            echo "cloudsmith_owner=${CLOUDSMITH_OWNER}"
+            echo "cloudsmith_repo=${CLOUDSMITH_REPO}"
+            echo "linux_publish_ready=${linux_publish_ready}"
+            echo "snap_publish_ready=${snap_publish_ready}"
+            echo "snap_channel=${SNAP_CHANNEL}"
+          } >> "${GITHUB_OUTPUT}"
+
+  crates-io:
+    name: Publish crates.io package
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    if: needs.publish-preflight.outputs.cargo_publish_ready == 'true'
+    timeout-minutes: 15
+    continue-on-error: true
+    environment: crates-io
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      VERSION: ${{ needs.publish-preflight.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Set stable toolchain as default
+        run: rustup default stable
+
+      - name: Verify package locally
+        run: |
+          cargo package --locked
+          cargo publish --dry-run --locked
+
+      - name: Publish to crates.io
+        if: env.CARGO_REGISTRY_TOKEN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl -fsSL "https://crates.io/api/v1/crates/${BINARY_NAME}/${VERSION}" >/dev/null 2>&1; then
+            echo "::notice::stellar-forge ${VERSION} is already published on crates.io."
+            exit 0
+          fi
+          cargo publish --locked
+
+      - name: Report missing crates.io token
+        if: env.CARGO_REGISTRY_TOKEN == ''
+        run: echo "::notice::CARGO_REGISTRY_TOKEN is not configured; crates.io stayed build-only."
+
+  homebrew-formula:
+    name: Generate Homebrew formula
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Download packaged archives
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Render formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          license_args=()
+          if [[ -n "${PACKAGE_LICENSE}" ]]; then
+            license_args=(--license "${PACKAGE_LICENSE}")
+          fi
+          python3 .github/scripts/render-homebrew-formula.py \
+            --version "${VERSION}" \
+            --checksums-dir release-assets \
+            "${license_args[@]}" \
+            --output stellar-forge.rb
+        env:
+          VERSION: ${{ needs.publish-preflight.outputs.version }}
+          PACKAGE_LICENSE: ${{ needs.publish-preflight.outputs.package_license }}
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-formula
+          path: stellar-forge.rb
+          if-no-files-found: error
+
+      - name: Attach formula to GitHub release
+        run: gh release upload "${RELEASE_TAG}" stellar-forge.rb --clobber
+
+  publish-homebrew:
+    name: Publish Homebrew formula
+    runs-on: ubuntu-latest
+    needs:
+      - publish-preflight
+      - homebrew-formula
+    if: needs.publish-preflight.outputs.homebrew_tap_ready == 'true'
+    timeout-minutes: 10
+    continue-on-error: true
+    environment: homebrew-tap
+    env:
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_TAP_REPO: ${{ needs.publish-preflight.outputs.homebrew_tap_repo }}
+      VERSION: ${{ needs.publish-preflight.outputs.version }}
+    steps:
+      - name: Download formula artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: homebrew-formula
+          path: formula
+
+      - name: Update tap formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not configured; Homebrew stayed artifact-only."
+            exit 0
+          fi
+
+          gh repo clone "${HOMEBREW_TAP_REPO}" tap
+          cd tap
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p Formula
+          cp ../formula/stellar-forge.rb Formula/stellar-forge.rb
+
+          if git diff --quiet -- Formula/stellar-forge.rb; then
+            echo "::notice::Homebrew formula already matches v${VERSION}."
+            exit 0
+          fi
+
+          git add Formula/stellar-forge.rb
+          git commit -m "stellar-forge v${VERSION}"
+          git push origin HEAD
+
+  publish-apt:
+    name: Publish APT (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    if: needs.publish-preflight.outputs.linux_publish_ready == 'true'
+    timeout-minutes: 30
+    continue-on-error: true
+    environment: apt-repo
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+    env:
+      CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      CLOUDSMITH_OWNER: ${{ needs.publish-preflight.outputs.cloudsmith_owner }}
+      CLOUDSMITH_REPO: ${{ needs.publish-preflight.outputs.cloudsmith_repo }}
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.publish-preflight.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+
+      - name: Set stable toolchain as default
+        run: rustup default stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: deb-${{ matrix.target }}
+
+      - name: Install Debian packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev pipx
+
+      - name: Install Linux ARM64 linker
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p "${HOME}/.cargo"
+          cat >> "${HOME}/.cargo/config.toml" <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Install cargo-deb and Cloudsmith CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-deb --locked
+          pipx install cloudsmith-cli
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Build Debian package
+        id: deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/debian
+          deb_path="target/debian/stellar-forge_${VERSION}_${{ matrix.arch }}.deb"
+          cargo deb --locked --no-strip --target "${{ matrix.target }}" --output "${deb_path}"
+          sha256sum "${deb_path}" > "${deb_path}.sha256"
+          dpkg-deb --info "${deb_path}"
+          echo "path=${deb_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Debian package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: debian-package-${{ matrix.arch }}
+          path: |
+            ${{ steps.deb.outputs.path }}
+            ${{ steps.deb.outputs.path }}.sha256
+          if-no-files-found: error
+
+      - name: Publish Debian package to Cloudsmith
+        if: env.CLOUDSMITH_API_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cloudsmith push deb \
+            "${CLOUDSMITH_OWNER}/${CLOUDSMITH_REPO}/any-distro/any-version" \
+            "${{ steps.deb.outputs.path }}" \
+            --republish
+
+      - name: Report missing Cloudsmith token
+        if: env.CLOUDSMITH_API_KEY == ''
+        run: echo "::notice::CLOUDSMITH_API_KEY is not configured; APT stayed GitHub Release artifact-only."
+
+      - name: Attach Debian package to GitHub release
+        run: gh release upload "${RELEASE_TAG}" "${{ steps.deb.outputs.path }}" "${{ steps.deb.outputs.path }}.sha256" --clobber
+
+  publish-snap:
+    name: Publish Snap (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: publish-preflight
+    if: needs.publish-preflight.outputs.snap_publish_ready == 'true'
+    timeout-minutes: 45
+    continue-on-error: true
+    environment: snap-store-stable
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+      SNAP_CHANNEL: ${{ needs.publish-preflight.outputs.snap_channel }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Inject release tag into snapcraft.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          sed -i "s/^version: .*/version: \"${version}\"/" snap/snapcraft.yaml
+          grep '^version:' snap/snapcraft.yaml
+
+      - name: Build snap
+        id: snapcraft
+        uses: snapcore/action-build@v1
+
+      - name: Publish snap
+        if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ env.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.snapcraft.outputs.snap }}
+          release: ${{ env.SNAP_CHANNEL }}
+
+      - name: Report missing Snap Store credentials
+        if: env.SNAPCRAFT_STORE_CREDENTIALS == ''
+        run: echo "::notice::SNAPCRAFT_STORE_CREDENTIALS is not configured; Snap stayed build-only."
+
+      - name: Upload snap artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: snap-package-${{ matrix.arch }}
+          path: ${{ steps.snapcraft.outputs.snap }}
+          if-no-files-found: error
+
+      - name: Attach snap to GitHub release
+        if: success()
+        run: gh release upload "${RELEASE_TAG}" "${{ steps.snapcraft.outputs.snap }}" --clobber
+
+  release-summary:
+    name: Release channel summary
+    runs-on: ubuntu-latest
+    needs:
+      - release
+      - crates-io
+      - homebrew-formula
+      - publish-homebrew
+      - publish-apt
+      - publish-snap
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate channel status
+        shell: bash
+        env:
+          GITHUB_STATUS: ${{ needs.release.result }}
+          CRATES_STATUS: ${{ needs.crates-io.result }}
+          FORMULA_STATUS: ${{ needs.homebrew-formula.result }}
+          HOMEBREW_STATUS: ${{ needs.publish-homebrew.result }}
+          APT_STATUS: ${{ needs.publish-apt.result }}
+          SNAP_STATUS: ${{ needs.publish-snap.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## stellar-forge release channel status"
+            echo
+            echo "| Channel | Status |"
+            echo "| --- | --- |"
+            echo "| GitHub Release | ${GITHUB_STATUS} |"
+            echo "| crates.io | ${CRATES_STATUS} |"
+            echo "| Homebrew formula artifact | ${FORMULA_STATUS} |"
+            echo "| Homebrew tap | ${HOMEBREW_STATUS} |"
+            echo "| APT / Cloudsmith | ${APT_STATUS} |"
+            echo "| Snap Store | ${SNAP_STATUS} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${GITHUB_STATUS}" != "success" ]]; then
+            echo "::error::GitHub Release publish failed; channel results are summarized above."
+            exit 1
+          fi

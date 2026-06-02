@@ -97,6 +97,7 @@ docs for those tools and use this README for how `stellar-forge` expects them to
 Release archives are published from tagged GitHub releases for:
 
 - `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
@@ -115,7 +116,23 @@ cargo build --release
 ./target/release/stellar-forge doctor
 ```
 
-### Install into Cargo's bin directory
+### Install from package managers
+
+After the relevant release channel has published:
+
+```bash
+cargo install stellar-forge
+brew install Pantani/tap/stellar-forge
+sudo snap install stellar-forge --classic
+curl -1sLf 'https://dl.cloudsmith.io/public/pantani/stellar-forge/setup.deb.sh' | sudo -E bash
+sudo apt-get install stellar-forge
+```
+
+Package-manager publishing for crates.io, Homebrew, APT via Cloudsmith, and Snap is wired through
+the release CI harness. See [docs/release-publishing.md](docs/release-publishing.md) for channel
+readiness, required secrets, rerun behavior, and remaining external publish gates.
+
+### Install into Cargo's bin directory from this checkout
 
 ```bash
 cargo install --path .
@@ -263,6 +280,10 @@ Contribution and project-process docs:
 - [SUPPORT.md](SUPPORT.md)
 - [SECURITY.md](SECURITY.md)
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+
+## License
+
+`stellar-forge` is licensed under the [MIT License](LICENSE).
 
 ## Troubleshooting
 
