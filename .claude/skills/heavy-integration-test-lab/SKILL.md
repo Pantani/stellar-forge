@@ -1,6 +1,6 @@
 ---
 name: heavy-integration-test-lab
-description: Use for stellar-forge "testes de verdade", heavy integration, full-stack validation, real generated workspace testing, broad smoke matrices, local heavy labs, live/manual test tiers, environment probes, and reruns or updates of integration evidence. This skill must tier tests into offline, heavy local, and live/manual gates before execution.
+description: Use for stellar-forge high-confidence validation, heavy integration, full-stack validation, real generated workspace testing, broad smoke matrices, local heavy labs, live/manual test tiers, environment probes, and reruns or updates of integration evidence. This skill must tier tests into offline, heavy local, and live/manual gates before execution.
 ---
 
 # Heavy Integration Test Lab
@@ -61,7 +61,7 @@ These tests should use fake binaries, temp workspaces, dry runs, or dependency s
 
 ## Heavy Local Lab
 
-Use this tier when the user asks for "testes de verdade", broad validation, release confidence, or generated app confidence:
+Use this tier when the user asks for high-confidence validation, broad validation, release confidence, or generated app confidence:
 
 - Build the CLI binary with locked dependencies.
 - Generate at least one temp workspace from a full-stack template.

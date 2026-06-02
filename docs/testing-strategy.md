@@ -36,7 +36,7 @@ Most PR-safe tests should use temp workspaces, fake `stellar` binaries, fake pac
 
 ## Heavy Local Lab
 
-Use this when the goal is "testes de verdade" before a major handoff:
+Use this when the goal is high-confidence validation before a major handoff:
 
 1. Probe Rust, `stellar`, Node.js, package manager, Docker, browser, and `sqlite3`.
 2. Build the CLI with locked dependencies.

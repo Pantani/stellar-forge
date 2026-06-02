@@ -18,7 +18,7 @@ cargo test --locked
 
 **Goal:** Expand deterministic unit, contract, integration, E2E, idempotence, heavy local, live/manual, and resilience coverage for the CLI and generated workspaces.
 
-**Trigger:** For `stellar-forge` test coverage, harness, CI, contract tests, E2E, heavy integration, "testes de verdade", real generated app validation, live Stellar CLI, Docker/local network, testnet, idempotence, dry-run purity, generated scaffold drift, or resilience work, use `.claude/skills/stellar-forge-test-harness-orchestrator/SKILL.md`. Simple questions can still be answered directly.
+**Trigger:** For `stellar-forge` test coverage, harness, CI, contract tests, E2E, heavy integration, production-grade validation, real generated app validation, live Stellar CLI, Docker/local network, testnet, idempotence, dry-run purity, generated scaffold drift, or resilience work, use `.claude/skills/stellar-forge-test-harness-orchestrator/SKILL.md`. Simple questions can still be answered directly.
 
 **Change History:**
 | Date | Change | Target | Reason |

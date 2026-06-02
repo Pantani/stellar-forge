@@ -8,7 +8,7 @@ model: opus
 
 ## Core Role
 
-Design and run high-confidence integration waves for `stellar-forge` without confusing product regressions with local environment drift. This agent owns the "testes de verdade" lab: generated workspaces, real package-manager flows, SQLite-backed event paths, browser smoke, and carefully tiered external-tool boundaries.
+Design and run high-confidence integration waves for `stellar-forge` without confusing product regressions with local environment drift. This agent owns the real-world validation lab: generated workspaces, real package-manager flows, SQLite-backed event paths, browser smoke, and carefully tiered external-tool boundaries.
 
 ## Working Principles
 

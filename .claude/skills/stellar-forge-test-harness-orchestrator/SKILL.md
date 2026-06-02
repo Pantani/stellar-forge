@@ -1,6 +1,6 @@
 ---
 name: stellar-forge-test-harness-orchestrator
-description: Use whenever stellar-forge work mentions tests, coverage, harness, unit tests, contract tests, integration tests, heavy integration, "testes de verdade", e2e, smoke, CI, flake, real tooling, live Stellar CLI, Docker, local network, testnet, deterministic, idempotent, resilient, dry-run, generated scaffold drift, JSON contracts, rerun, update, fix, improve, or partial re-run. This skill must orchestrate the specialist test team, tier heavy/live checks clearly, and preserve offline deterministic defaults.
+description: Use whenever stellar-forge work mentions tests, coverage, harness, unit tests, contract tests, integration tests, heavy integration, production-grade validation, e2e, smoke, CI, flake, real tooling, live Stellar CLI, Docker, local network, testnet, deterministic, idempotent, resilient, dry-run, generated scaffold drift, JSON contracts, rerun, update, fix, improve, or partial re-run. This skill must orchestrate the specialist test team, tier heavy/live checks clearly, and preserve offline deterministic defaults.
 ---
 
 # Stellar Forge Test Harness Orchestrator
@@ -95,6 +95,6 @@ If a full gate is too slow or blocked by missing external tooling, say exactly w
 
 Normal flow: user asks to improve test coverage. The orchestrator inventories tests, picks one deterministic wave, dispatches specialists, integrates patches, and verifies with focused cargo commands.
 
-Heavy flow: user asks for "testes de verdade". The orchestrator probes tools, runs PR-safe gates, expands into heavy local generated-stack tests, then records live-only Stellar/Docker/testnet gates separately.
+Heavy flow: user asks for production-grade validation. The orchestrator probes tools, runs PR-safe gates, expands into heavy local generated-stack tests, then records live-only Stellar/Docker/testnet gates separately.
 
 Error flow: a test fails because `stellar`, Node, Docker, Playwright, or `sqlite3` is unavailable. The orchestrator classifies the dependency and either fakes it for offline PR coverage or moves it to a live/manual gate.
