@@ -121,6 +121,51 @@ fn project_smoke_browser_installs_playwright_when_cache_is_cold() {
     }));
 }
 
+#[test]
+fn project_smoke_browser_installs_playwright_when_cache_probe_fails() {
+    if !node_available() {
+        return;
+    }
+
+    let root = init_rewards_project();
+    let fake_bin = install_fake_browser_smoke_tooling(&root);
+    let pnpm_log = root.join("pnpm-browser-smoke.log");
+    let port = next_port();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_PNPM_LOG", &pnpm_log)
+        .env("FAKE_PLAYWRIGHT_LIST_STATUS", "1")
+        .env("STELLAR_FORGE_BROWSER_SMOKE_PORT", port.to_string())
+        .args(["--json", "project", "smoke", "--browser"])
+        .output()
+        .expect("command should run");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pnpm_invocations = read_log(&pnpm_log);
+    assert!(
+        pnpm_invocations
+            .iter()
+            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install --list chromium") })
+    );
+    assert!(
+        pnpm_invocations
+            .iter()
+            .any(|line| is_playwright_chromium_install(line))
+    );
+    assert!(pnpm_invocations.iter().any(|line| {
+        line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
+    }));
+}
+
 fn init_rewards_project() -> PathBuf {
     let temp = tempdir().expect("tempdir should be created");
     let kept = temp.keep();
@@ -228,7 +273,7 @@ if (args[0] === 'dlx') {
   const sub = args.slice(2);
   if (sub[0] === 'install' && sub[1] === '--list' && sub[2] === 'chromium') {
     process.stdout.write(process.env.FAKE_PLAYWRIGHT_LIST_OUTPUT || '');
-    process.exit(0);
+    process.exit(Number(process.env.FAKE_PLAYWRIGHT_LIST_STATUS || '0'));
   }
   if (sub[0] === 'install' && sub.includes('chromium')) {
     process.exit(0);

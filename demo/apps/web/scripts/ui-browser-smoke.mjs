@@ -94,7 +94,8 @@ function run(command, args, cwd = appRoot) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`${rendered} exited with status ${result.status ?? 1}`);
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`${rendered} exited with status ${result.status ?? 1}${output ? `\n${output}` : ''}`);
   }
 }
 
@@ -199,8 +200,13 @@ function chromiumInstallSignature() {
 
 function listInstalledBrowsers() {
   const invoker = playwrightInvoker(detectPackageManager());
-  const output = runCapture(invoker.command, [...invoker.prefix, 'install', '--list', 'chromium']);
-  return `${output.stdout}\n${output.stderr}`;
+  try {
+    const output = runCapture(invoker.command, [...invoker.prefix, 'install', '--list', 'chromium']);
+    return `${output.stdout}\n${output.stderr}`;
+  } catch (error) {
+    log(`browser cache probe failed; assuming Chromium is missing: ${error.message}`);
+    return '';
+  }
 }
 
 function chromiumAlreadyInstalled() {
