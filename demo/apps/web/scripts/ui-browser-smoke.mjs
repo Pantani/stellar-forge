@@ -19,6 +19,8 @@ const playwrightVersion =
 const chromiumRevision =
   process.env.STELLAR_FORGE_PLAYWRIGHT_CHROMIUM_REVISION || '1217';
 const keepTemp = process.env.STELLAR_FORGE_BROWSER_SMOKE_KEEP === '1';
+const browserChannel = process.env.STELLAR_FORGE_BROWSER_SMOKE_CHANNEL || '';
+const skipBrowserInstall = process.env.STELLAR_FORGE_BROWSER_SMOKE_SKIP_INSTALL === '1';
 const host = process.env.STELLAR_FORGE_BROWSER_SMOKE_HOST || '127.0.0.1';
 const port = Number(process.env.STELLAR_FORGE_BROWSER_SMOKE_PORT || '4173');
 const timeoutMs = Number(process.env.STELLAR_FORGE_BROWSER_SMOKE_TIMEOUT_MS || '30000');
@@ -94,7 +96,8 @@ function run(command, args, cwd = appRoot) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`${rendered} exited with status ${result.status ?? 1}`);
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`${rendered} exited with status ${result.status ?? 1}${output ? `\n${output}` : ''}`);
   }
 }
 
@@ -199,16 +202,32 @@ function chromiumInstallSignature() {
 
 function listInstalledBrowsers() {
   const invoker = playwrightInvoker(detectPackageManager());
-  const output = runCapture(invoker.command, [...invoker.prefix, 'install', '--list', 'chromium']);
-  return `${output.stdout}\n${output.stderr}`;
+  try {
+    const output = runCapture(invoker.command, [...invoker.prefix, 'install', '--list', 'chromium']);
+    return `${output.stdout}\n${output.stderr}`;
+  } catch (error) {
+    log(`browser cache probe failed; assuming Chromium is missing: ${error.message}`);
+    return '';
+  }
 }
 
 function chromiumAlreadyInstalled() {
+  if (browserChannel || skipBrowserInstall) {
+    return true;
+  }
   const output = listInstalledBrowsers();
   return chromiumInstallSignature().every((signature) => output.includes(signature));
 }
 
 function ensureChromiumInstalled() {
+  if (browserChannel) {
+    log(`using Playwright browser channel ${browserChannel}; skipping Chromium install`);
+    return;
+  }
+  if (skipBrowserInstall) {
+    log('browser install skipped by STELLAR_FORGE_BROWSER_SMOKE_SKIP_INSTALL');
+    return;
+  }
   if (chromiumAlreadyInstalled()) {
     log(`Chromium revision ${chromiumRevision} already present; skipping install`);
     return;
@@ -242,6 +261,7 @@ module.exports = defineConfig({
   reporter: 'line',
   use: {
     baseURL: ${JSON.stringify(baseUrl)},
+    ${browserChannel ? `channel: ${JSON.stringify(browserChannel)},` : ''}
     headless: true,
     screenshot: 'only-on-failure',
   },
@@ -260,8 +280,17 @@ const expectedSections = ['Queue', 'Runtime', 'Events', 'Contracts', 'Tokens'];
 function isIgnorableRuntimeNoise(message) {
   return (
     message.includes('[DEP0169] DeprecationWarning') ||
-    message.includes('url.parse() behavior is not standardized')
+    message.includes('url.parse() behavior is not standardized') ||
+    message === 'Failed to load resource: the server responded with a status of 404 (Not Found)'
   );
+}
+
+function isIgnorableFailedResponse(response) {
+  try {
+    return new URL(response.url()).pathname === '/favicon.ico';
+  } catch (_error) {
+    return false;
+  }
 }
 
 test('generated frontend renders expected sections without browser errors', async ({ page }) => {
@@ -282,7 +311,7 @@ test('generated frontend renders expected sections without browser errors', asyn
     }
   });
   page.on('response', (response) => {
-    if (response.status() >= 400) {
+    if (response.status() >= 400 && !isIgnorableFailedResponse(response)) {
       failedResponses.push(\`\${response.status()} \${response.url()}\`);
     }
   });

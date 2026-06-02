@@ -57,7 +57,7 @@ fn project_smoke_browser_skips_playwright_install_when_chromium_is_cached() {
     assert!(
         !pnpm_invocations
             .iter()
-            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install chromium") })
+            .any(|line| is_playwright_chromium_install(line))
     );
     assert!(pnpm_invocations.iter().any(|line| {
         line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
@@ -114,7 +114,99 @@ fn project_smoke_browser_installs_playwright_when_cache_is_cold() {
     assert!(
         pnpm_invocations
             .iter()
-            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install chromium") })
+            .any(|line| is_playwright_chromium_install(line))
+    );
+    assert!(pnpm_invocations.iter().any(|line| {
+        line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
+    }));
+}
+
+#[test]
+fn project_smoke_browser_installs_playwright_when_cache_probe_fails() {
+    if !node_available() {
+        return;
+    }
+
+    let root = init_rewards_project();
+    let fake_bin = install_fake_browser_smoke_tooling(&root);
+    let pnpm_log = root.join("pnpm-browser-smoke.log");
+    let port = next_port();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_PNPM_LOG", &pnpm_log)
+        .env("FAKE_PLAYWRIGHT_LIST_STATUS", "1")
+        .env("STELLAR_FORGE_BROWSER_SMOKE_PORT", port.to_string())
+        .args(["--json", "project", "smoke", "--browser"])
+        .output()
+        .expect("command should run");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pnpm_invocations = read_log(&pnpm_log);
+    assert!(
+        pnpm_invocations
+            .iter()
+            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install --list chromium") })
+    );
+    assert!(
+        pnpm_invocations
+            .iter()
+            .any(|line| is_playwright_chromium_install(line))
+    );
+    assert!(pnpm_invocations.iter().any(|line| {
+        line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
+    }));
+}
+
+#[test]
+fn project_smoke_browser_can_use_system_browser_channel_without_install() {
+    if !node_available() {
+        return;
+    }
+
+    let root = init_rewards_project();
+    let fake_bin = install_fake_browser_smoke_tooling(&root);
+    let pnpm_log = root.join("pnpm-browser-smoke.log");
+    let port = next_port();
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .env("PATH", test_path(&fake_bin))
+        .env("FAKE_PNPM_LOG", &pnpm_log)
+        .env("FAKE_EXPECT_PLAYWRIGHT_CHANNEL", "chrome")
+        .env("STELLAR_FORGE_BROWSER_SMOKE_CHANNEL", "chrome")
+        .env("STELLAR_FORGE_BROWSER_SMOKE_SKIP_INSTALL", "1")
+        .env("STELLAR_FORGE_BROWSER_SMOKE_PORT", port.to_string())
+        .args(["--json", "project", "smoke", "--browser"])
+        .output()
+        .expect("command should run");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pnpm_invocations = read_log(&pnpm_log);
+    assert!(
+        !pnpm_invocations
+            .iter()
+            .any(|line| line.contains("install --list chromium"))
+    );
+    assert!(
+        !pnpm_invocations
+            .iter()
+            .any(|line| is_playwright_chromium_install(line))
     );
     assert!(pnpm_invocations.iter().any(|line| {
         line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
@@ -228,7 +320,7 @@ if (args[0] === 'dlx') {
   const sub = args.slice(2);
   if (sub[0] === 'install' && sub[1] === '--list' && sub[2] === 'chromium') {
     process.stdout.write(process.env.FAKE_PLAYWRIGHT_LIST_OUTPUT || '');
-    process.exit(0);
+    process.exit(Number(process.env.FAKE_PLAYWRIGHT_LIST_STATUS || '0'));
   }
   if (sub[0] === 'install' && sub.includes('chromium')) {
     process.exit(0);
@@ -244,6 +336,14 @@ if (args[0] === 'dlx') {
     if (!match) {
       console.error('missing baseURL in fake playwright config');
       process.exit(1);
+    }
+    if (process.env.FAKE_EXPECT_PLAYWRIGHT_CHANNEL) {
+      const channel = process.env.FAKE_EXPECT_PLAYWRIGHT_CHANNEL;
+      const channelPattern = new RegExp(`channel:\\s*['"]${channel}['"]`);
+      if (!channelPattern.test(config)) {
+        console.error(`missing Playwright channel ${channel}`);
+        process.exit(1);
+      }
     }
     http
       .get(match[1], (response) => {
@@ -275,6 +375,12 @@ fn read_log(path: &Path) -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
+}
+
+fn is_playwright_chromium_install(line: &str) -> bool {
+    line.contains("dlx @playwright/test@1.59.1 install ")
+        && line.contains("chromium")
+        && !line.contains("--list")
 }
 
 fn node_available() -> bool {

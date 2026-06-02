@@ -24,12 +24,14 @@ fn init_writes_expected_project_scaffold() {
     let doctor_script = read(root.join("scripts/doctor.mjs"));
     let worker = read(root.join("workers/events/ingest-events.mjs"));
     let web_package = read(root.join("apps/web/package.json"));
+    let web_pnpm_workspace = read(root.join("apps/web/pnpm-workspace.yaml"));
     let web_smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
     let web_browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
     assert!(root.join("stellarforge.toml").exists());
     assert!(root.join("stellarforge.lock.json").exists());
     assert!(root.join("apps/api/package.json").exists());
     assert!(root.join("apps/web/src/main.tsx").exists());
+    assert!(root.join("apps/web/pnpm-workspace.yaml").exists());
     assert!(root.join("apps/web/scripts/ui-smoke.mjs").exists());
     assert!(root.join("apps/web/scripts/ui-browser-smoke.mjs").exists());
     assert!(root.join("contracts/app/Cargo.toml").exists());
@@ -62,6 +64,8 @@ fn init_writes_expected_project_scaffold() {
     assert!(web_package.contains("\"smoke:browser:install\""));
     assert!(web_package.contains("\"smoke:browser:run\""));
     assert!(web_package.contains("\"preview\""));
+    assert!(web_pnpm_workspace.contains("allowBuilds:"));
+    assert!(web_pnpm_workspace.contains("esbuild: true"));
     assert!(web_smoke_runner.contains("vite build"));
     assert!(web_smoke_runner.contains("vite preview"));
     assert!(web_smoke_runner.contains("UI smoke passed"));
@@ -1461,6 +1465,8 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     fs::write(root.join("apps/api/openapi.json"), "{}\n").expect("openapi should be overwritten");
     fs::write(root.join("apps/web/src/generated/stellar.ts"), "BROKEN\n")
         .expect("frontend state should be overwritten");
+    fs::write(root.join("apps/web/pnpm-workspace.yaml"), "BROKEN\n")
+        .expect("frontend pnpm workspace config should be overwritten");
     fs::write(root.join("apps/web/scripts/ui-smoke.mjs"), "BROKEN\n")
         .expect("frontend smoke runner should be overwritten");
     fs::write(
@@ -1513,6 +1519,7 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     let contract_service = read(root.join("apps/api/src/services/contracts/rewards.ts"));
     let openapi = read(root.join("apps/api/openapi.json"));
     let generated_state = read(root.join("apps/web/src/generated/stellar.ts"));
+    let web_pnpm_workspace = read(root.join("apps/web/pnpm-workspace.yaml"));
     let smoke_runner = read(root.join("apps/web/scripts/ui-smoke.mjs"));
     let browser_smoke_runner = read(root.join("apps/web/scripts/ui-browser-smoke.mjs"));
 
@@ -1520,6 +1527,7 @@ fn project_sync_restores_derived_api_frontend_files_and_reports_modules() {
     assert!(contract_service.contains("/contracts/rewards/call/:fn"));
     assert!(openapi.contains("/contracts/rewards/call/{fn}"));
     assert!(generated_state.contains("stellarState"));
+    assert!(web_pnpm_workspace.contains("esbuild: true"));
     assert!(smoke_runner.contains("UI smoke passed"));
     assert!(browser_smoke_runner.contains("browser smoke passed"));
 }
@@ -1535,6 +1543,7 @@ fn project_sync_is_content_idempotent_for_generated_artifacts() {
         root.join("apps/api/src/services/contracts/rewards.ts"),
         root.join("apps/api/src/services/tokens/points.ts"),
         root.join("apps/web/src/generated/stellar.ts"),
+        root.join("apps/web/pnpm-workspace.yaml"),
         root.join("apps/web/scripts/ui-smoke.mjs"),
         root.join("apps/web/scripts/ui-browser-smoke.mjs"),
     ];
