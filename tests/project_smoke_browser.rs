@@ -57,7 +57,7 @@ fn project_smoke_browser_skips_playwright_install_when_chromium_is_cached() {
     assert!(
         !pnpm_invocations
             .iter()
-            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install chromium") })
+            .any(|line| is_playwright_chromium_install(line))
     );
     assert!(pnpm_invocations.iter().any(|line| {
         line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
@@ -114,7 +114,7 @@ fn project_smoke_browser_installs_playwright_when_cache_is_cold() {
     assert!(
         pnpm_invocations
             .iter()
-            .any(|line| { line.contains("dlx @playwright/test@1.59.1 install chromium") })
+            .any(|line| is_playwright_chromium_install(line))
     );
     assert!(pnpm_invocations.iter().any(|line| {
         line.contains("dlx @playwright/test@1.59.1 test ") && line.contains("--config ")
@@ -275,6 +275,12 @@ fn read_log(path: &Path) -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
+}
+
+fn is_playwright_chromium_install(line: &str) -> bool {
+    line.contains("dlx @playwright/test@1.59.1 install ")
+        && line.contains("chromium")
+        && !line.contains("--list")
 }
 
 fn node_available() -> bool {

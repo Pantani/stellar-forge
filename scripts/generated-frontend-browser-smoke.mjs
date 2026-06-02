@@ -75,7 +75,7 @@ function packageManagerInstallCommand(packageManager) {
     case 'bun':
       return { command: 'bun', args: ['install'] };
     default:
-      return { command: 'pnpm', args: ['install', '--prefer-offline', '--reporter=silent'] };
+      return { command: 'pnpm', args: ['install', '--prefer-offline', '--no-frozen-lockfile'] };
   }
 }
 
