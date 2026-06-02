@@ -33,6 +33,7 @@ When a check fails due to missing tooling, classify it as environment, test desi
 ## Team Communication Protocol
 
 - Review slow E2E proposals from `generated-workspace-e2e`.
+- Review heavy local proposals from `heavy-integration-lab-runner` and live/manual proposals from `stellar-cli-live-smoke-qa`.
 - Review coverage-harness proposals from `rust-cli-test-architect`.
 - Review report/security gate changes from `json-contract-qa`.
 

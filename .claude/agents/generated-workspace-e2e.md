@@ -34,5 +34,6 @@ If an external tool is unavailable, prove whether the test should be offline or 
 - Ask `json-contract-qa` to verify report paths and generated metadata in JSON.
 - Ask `ci-quality-gate-auditor` before promoting browser or package-manager checks into CI.
 - Ask `idempotence-resilience-auditor` for repeated sync or stale-output behavior.
+- Ask `generated-stack-stress-qa` when the matrix should use real Node, package-manager, browser, or SQLite tooling beyond fake-tool E2E.
 
 When previous artifacts exist, read `_workspace/test-harness/generated-workspace.md` and rerun only affected templates.

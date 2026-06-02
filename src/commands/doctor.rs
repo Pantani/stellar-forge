@@ -534,7 +534,7 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
                 "stellar",
                 &["plugin".to_string(), "ls".to_string()],
             )?;
-            let status = if output.contains("forge") {
+            let status = if stellar_plugin_list_includes_forge(&output) {
                 "ok"
             } else {
                 "warn"
@@ -553,6 +553,19 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
     report.status = aggregate_status(&report.checks);
     report.message = Some("dependency checks completed".to_string());
     Ok(report)
+}
+
+fn stellar_plugin_list_includes_forge(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.split_whitespace().any(|token| {
+            token.trim_matches(|character: char| {
+                matches!(
+                    character,
+                    '|' | ',' | ':' | ';' | '"' | '\'' | '`' | '[' | ']'
+                )
+            }) == "forge"
+        })
+    })
 }
 
 fn doctor_project(context: &AppContext) -> Result<CommandReport> {
