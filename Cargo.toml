@@ -2,6 +2,13 @@
 name = "stellar-forge"
 version = "0.1.0"
 edition = "2024"
+description = "Rust CLI for manifest-driven Stellar workspaces, scaffolding, validation, dry-runs, release planning, and generated project tooling."
+repository = "https://github.com/Pantani/stellar-forge"
+homepage = "https://github.com/Pantani/stellar-forge"
+readme = "README.md"
+keywords = ["stellar", "soroban", "cli", "web3", "scaffold"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".claude/**", ".github/**", "_workspace/**", "AGENTS.MD", "CLAUDE.MD"]
 
 [dependencies]
 anyhow = "1.0.100"

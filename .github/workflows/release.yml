@@ -10,13 +10,22 @@ on:
         description: "Existing release tag to package, for example v0.1.0"
         required: true
         type: string
+      publish_external:
+        description: "Publish external package-manager channels after the GitHub release is packaged"
+        default: false
+        required: false
+        type: boolean
+      confirm:
+        description: "Required for external publish: type PUBLISH vMAJOR.MINOR.PATCH"
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   BINARY_NAME: stellar-forge
@@ -102,6 +111,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: package
     timeout-minutes: 10
+    environment: github-release
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -146,3 +158,317 @@ jobs:
           body_path: release-notes.md
           files: release-assets/*
           fail_on_unmatched_files: true
+
+  publish-preflight:
+    name: Publish preflight
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      package_license: ${{ steps.check.outputs.package_license }}
+      cargo_publish_ready: ${{ steps.check.outputs.cargo_publish_ready }}
+      homebrew_tap_ready: ${{ steps.check.outputs.homebrew_tap_ready }}
+      homebrew_tap_repo: ${{ steps.check.outputs.homebrew_tap_repo }}
+      linux_publish_ready: ${{ steps.check.outputs.linux_publish_ready }}
+      snap_publish_ready: ${{ steps.check.outputs.snap_publish_ready }}
+      external_publish_confirmed: ${{ steps.check.outputs.external_publish_confirmed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'Pantani/homebrew-tap' }}
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+      APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+      APT_REPO_UPLOAD_TOKEN: ${{ secrets.APT_REPO_UPLOAD_TOKEN }}
+      PUBLISH_EXTERNAL: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_external || false }}
+      PUBLISH_CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Download packaged archives
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate package-manager publish readiness
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like vMAJOR.MINOR.PATCH, got ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          cargo_version="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          metadata = subprocess.check_output(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              text=True,
+          )
+          package = json.loads(metadata)["packages"][0]
+          print(package["version"])
+          PY
+          )"
+          if [[ "${cargo_version}" != "${version}" ]]; then
+            echo "Cargo.toml version ${cargo_version} does not match ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          if ! grep -Eq "^## ${version}([[:space:]]|-|$)" CHANGELOG.md; then
+            echo "CHANGELOG.md is missing a ${version} section" >&2
+            exit 1
+          fi
+
+          for target in x86_64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+            archive="${BINARY_NAME}-${version}-${target}.tar.gz"
+            test -s "release-assets/${archive}"
+            test -s "release-assets/${archive}.sha256"
+          done
+
+          package_license="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          metadata = subprocess.check_output(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              text=True,
+          )
+          package = json.loads(metadata)["packages"][0]
+          print(package.get("license") or "")
+          PY
+          )"
+
+          cargo_publish_ready=false
+          linux_publish_ready=false
+          if [[ -n "${package_license}" ]]; then
+            cargo_publish_ready=true
+          else
+            echo "::notice::crates.io, .deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
+          fi
+
+          if [[ -n "${package_license}" ]]; then
+            linux_publish_ready=true
+          else
+            echo "::notice::.deb, APT, and final Homebrew audit are blocked until Cargo.toml declares a license or license-file."
+          fi
+
+          homebrew_tap_ready=false
+          if [[ -n "${package_license}" ]] && gh repo view "${HOMEBREW_TAP_REPO}" >/dev/null 2>&1; then
+            homebrew_tap_ready=true
+          else
+            echo "::notice::Homebrew formula artifact will be generated, but tap PR is disabled until Cargo.toml declares a license and ${HOMEBREW_TAP_REPO} exists."
+          fi
+
+          snap_publish_ready=false
+          if [[ -n "${SNAPCRAFT_STORE_CREDENTIALS:-}" ]] && [[ -f snap/snapcraft.yaml ]]; then
+            snap_publish_ready=true
+          else
+            echo "::notice::Snap publish is disabled until snap/snapcraft.yaml and SNAPCRAFT_STORE_CREDENTIALS are configured."
+          fi
+
+          if [[ -z "${APT_SIGNING_KEY:-}" ]] || [[ -z "${APT_REPO_UPLOAD_TOKEN:-}" ]]; then
+            echo "::notice::APT repository publish is disabled until signing and upload secrets are configured."
+          fi
+
+          external_publish_confirmed=false
+          if [[ "${PUBLISH_EXTERNAL}" == "true" ]]; then
+            expected_confirm="PUBLISH ${RELEASE_TAG}"
+            if [[ "${PUBLISH_CONFIRM}" == "${expected_confirm}" ]]; then
+              external_publish_confirmed=true
+            else
+              echo "::notice::External package-manager publish requested, but confirmation did not match '${expected_confirm}'."
+            fi
+          fi
+
+          {
+            echo "version=${version}"
+            echo "package_license=${package_license}"
+            echo "cargo_publish_ready=${cargo_publish_ready}"
+            echo "homebrew_tap_ready=${homebrew_tap_ready}"
+            echo "homebrew_tap_repo=${HOMEBREW_TAP_REPO}"
+            echo "linux_publish_ready=${linux_publish_ready}"
+            echo "snap_publish_ready=${snap_publish_ready}"
+            echo "external_publish_confirmed=${external_publish_confirmed}"
+          } >> "${GITHUB_OUTPUT}"
+
+  crates-io:
+    name: Publish crates.io package
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    if: needs.publish-preflight.outputs.external_publish_confirmed == 'true' && needs.publish-preflight.outputs.cargo_publish_ready == 'true'
+    timeout-minutes: 15
+    environment: crates-io
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Set stable toolchain as default
+        run: rustup default stable
+
+      - name: Verify package locally
+        run: |
+          cargo package --locked
+          cargo publish --dry-run --locked
+
+      - name: Publish to crates.io
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo "CARGO_REGISTRY_TOKEN is not configured in the crates-io environment." >&2
+            exit 1
+          fi
+          cargo publish --locked
+
+  homebrew-formula:
+    name: Generate Homebrew formula
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Download packaged archives
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Render formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          license_args=()
+          if [[ -n "${PACKAGE_LICENSE}" ]]; then
+            license_args=(--license "${PACKAGE_LICENSE}")
+          fi
+          python3 .github/scripts/render-homebrew-formula.py \
+            --version "${VERSION}" \
+            --checksums-dir release-assets \
+            "${license_args[@]}" \
+            --output stellar-forge.rb
+        env:
+          VERSION: ${{ needs.publish-preflight.outputs.version }}
+          PACKAGE_LICENSE: ${{ needs.publish-preflight.outputs.package_license }}
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-formula
+          path: stellar-forge.rb
+          if-no-files-found: error
+
+      - name: Attach formula to GitHub release
+        run: gh release upload "${RELEASE_TAG}" stellar-forge.rb --clobber
+
+  homebrew-tap-pr:
+    name: Open Homebrew tap PR
+    runs-on: ubuntu-latest
+    needs:
+      - publish-preflight
+      - homebrew-formula
+    if: ${{ needs.publish-preflight.outputs.external_publish_confirmed == 'true' && needs.publish-preflight.outputs.homebrew_tap_ready == 'true' }}
+    timeout-minutes: 10
+    environment: homebrew-tap
+    env:
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_TAP_REPO: ${{ needs.publish-preflight.outputs.homebrew_tap_repo }}
+      VERSION: ${{ needs.publish-preflight.outputs.version }}
+    steps:
+      - name: Download formula artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: homebrew-formula
+          path: formula
+
+      - name: Push formula branch and open PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured in the homebrew-tap environment." >&2
+            exit 1
+          fi
+
+          branch="stellar-forge-v${VERSION}"
+          gh repo clone "${HOMEBREW_TAP_REPO}" tap
+          cd tap
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${branch}"
+          mkdir -p Formula
+          cp ../formula/stellar-forge.rb Formula/stellar-forge.rb
+
+          if git diff --quiet -- Formula/stellar-forge.rb; then
+            echo "::notice::Homebrew formula already matches v${VERSION}."
+            exit 0
+          fi
+
+          git add Formula/stellar-forge.rb
+          git commit -m "Update stellar-forge to v${VERSION}"
+          git push --force-with-lease origin "${branch}"
+
+          existing_pr="$(gh pr list --repo "${HOMEBREW_TAP_REPO}" --head "${branch}" --json url --jq '.[0].url // empty')"
+          if [[ -n "${existing_pr}" ]]; then
+            echo "::notice::Homebrew tap PR already exists: ${existing_pr}"
+          else
+            gh pr create \
+              --repo "${HOMEBREW_TAP_REPO}" \
+              --head "${branch}" \
+              --base main \
+              --title "Update stellar-forge to v${VERSION}" \
+              --body "Automated formula update for Pantani/stellar-forge v${VERSION}."
+          fi
+
+  linux-package-readiness:
+    name: Linux package-manager readiness
+    runs-on: ubuntu-latest
+    needs: publish-preflight
+    timeout-minutes: 5
+    steps:
+      - name: Summarize blocked Linux channels
+        shell: bash
+        run: |
+          {
+            echo "## Linux package-manager readiness"
+            echo
+            echo "| Channel | Status | Next setup |"
+            echo "| --- | --- | --- |"
+            if [[ "${LINUX_PUBLISH_READY}" == "true" ]]; then
+              echo "| .deb artifact | Metadata ready | Add cargo-deb/debian packaging config and choose artifact upload policy |"
+            else
+              echo "| .deb artifact | Blocked | Add license or license-file before Debian package metadata is final |"
+            fi
+            echo "| APT repository | Blocked | Configure signed repository host plus APT_SIGNING_KEY and APT_REPO_UPLOAD_TOKEN |"
+            if [[ "${SNAP_PUBLISH_READY}" == "true" ]]; then
+              echo "| Snap Store | Credentials/config present | Add snap build/publish job and confinement review |"
+            else
+              echo "| Snap Store | Blocked | Add snap/snapcraft.yaml and SNAPCRAFT_STORE_CREDENTIALS after package-name ownership is confirmed |"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          LINUX_PUBLISH_READY: ${{ needs.publish-preflight.outputs.linux_publish_ready }}
+          SNAP_PUBLISH_READY: ${{ needs.publish-preflight.outputs.snap_publish_ready }}

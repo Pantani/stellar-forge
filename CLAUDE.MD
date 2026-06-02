@@ -27,6 +27,18 @@ cargo test --locked
 | 2026-05-31 | Added shared integration-test support helpers for fake Stellar workspaces | `tests/support`, selected integration suites | Keep offline E2E coverage deterministic and reduce duplicated setup drift |
 | 2026-05-31 | Added test harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Repo-wide deterministic test coverage and resilience work |
 
+## Harness: Stellar Forge Publish Automation
+
+**Goal:** Prepare and maintain CI-driven publishing for release channels such as crates.io, Homebrew tap, Snap Store, `.deb` artifacts, and signed APT repositories.
+
+**Trigger:** For `stellar-forge` release publishing, package-manager distribution, version-tag publish automation, crates.io, Homebrew, snap, Debian, APT, package signing, registry secrets, or release CI work, use `.claude/skills/release-publish-orchestrator/SKILL.md`. Simple package-manager questions can still be answered directly.
+
+**Change History:**
+| Date | Change | Target | Reason |
+| --- | --- | --- | --- |
+| 2026-06-02 | Added release CI preflight and package-manager publishing preparation | `.github/workflows/release.yml`, `.github/scripts`, `docs/release-publishing.md` | Prepare safe CI-driven publishing while blocking external registries until metadata, secrets, and environments are ready |
+| 2026-06-02 | Added release publish automation harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Coordinate safe CI publishing across crates.io, Homebrew, snap, `.deb`, and APT channels |
+
 ## Repo-Specific Reminders
 
 - `stellar-forge` is a Rust CLI that shells out to the official `stellar` CLI for network-facing work.

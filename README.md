@@ -122,6 +122,10 @@ cargo install --path .
 stellar-forge doctor
 ```
 
+Package-manager publishing for crates.io, Homebrew, `.deb`, APT, and Snap is prepared through the
+release CI harness. See [docs/release-publishing.md](docs/release-publishing.md) for the current
+channel readiness, required secrets, and blockers.
+
 ### Use it as a `stellar forge` plugin
 
 Once the `stellar-forge` binary is on `PATH`, the official Stellar CLI can discover it as the
