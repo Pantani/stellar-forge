@@ -36,6 +36,8 @@ cargo test --locked
 **Change History:**
 | Date | Change | Target | Reason |
 | --- | --- | --- | --- |
+| 2026-06-02 | Aligned release publishing with Sunscreen PR #18 fan-out model | `.github/workflows/release.yml`, `docs/release-publishing.md`, `README.md` | Publish channels run best-effort after GitHub Release and report aggregate status without blocking core release binaries |
+| 2026-06-02 | Added MIT license, Debian/Snap packaging metadata, and release artifact jobs | `Cargo.toml`, `LICENSE`, `snap/snapcraft.yaml`, `.github/workflows/release.yml`, `docs/release-publishing.md` | Unblock package-manager CI once the release tag and Homebrew tap exist |
 | 2026-06-02 | Added release CI preflight and package-manager publishing preparation | `.github/workflows/release.yml`, `.github/scripts`, `docs/release-publishing.md` | Prepare safe CI-driven publishing while blocking external registries until metadata, secrets, and environments are ready |
 | 2026-06-02 | Added release publish automation harness team and orchestrator pointer | `.claude/agents`, `.claude/skills`, `CLAUDE.MD` | Coordinate safe CI publishing across crates.io, Homebrew, snap, `.deb`, and APT channels |
 

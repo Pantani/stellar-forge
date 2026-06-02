@@ -2,6 +2,13 @@
 
 All notable changes to `stellar-forge` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Release publishing fan-out for crates.io, Homebrew tap, APT via Cloudsmith, and Snap Store, with
+  channel failures reported in a release summary instead of blocking GitHub Release binaries.
+
 ## 0.1.0 - 2026-06-02
 
 Initial public release of `stellar-forge`, a Rust CLI for manifest-driven Stellar workspaces.
