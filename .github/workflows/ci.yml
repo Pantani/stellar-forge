@@ -59,6 +59,8 @@ jobs:
     timeout-minutes: 20
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+      STELLAR_FORGE_BROWSER_SMOKE_CHANNEL: chrome
+      STELLAR_FORGE_BROWSER_SMOKE_SKIP_INSTALL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -102,6 +104,9 @@ jobs:
 
       - name: Build CLI
         run: cargo build --locked
+
+      - name: Check system Chrome
+        run: google-chrome --version
 
       - name: Run generated frontend browser smoke runner
         run: node scripts/generated-frontend-browser-smoke.mjs
