@@ -92,6 +92,22 @@ docs for those tools and use this README for how `stellar-forge` expects them to
 
 ## Install
 
+### Download a release binary
+
+Release archives are published from tagged GitHub releases for:
+
+- `x86_64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+For example, on Linux x86_64:
+
+```bash
+curl -L https://github.com/Pantani/stellar-forge/releases/download/v0.1.0/stellar-forge-0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+install -m 0755 stellar-forge-0.1.0-x86_64-unknown-linux-gnu/stellar-forge ~/.local/bin/stellar-forge
+stellar-forge doctor
+```
+
 ### Build locally
 
 ```bash
@@ -242,6 +258,7 @@ cargo audit
 
 Contribution and project-process docs:
 
+- [CHANGELOG.md](CHANGELOG.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [SUPPORT.md](SUPPORT.md)
 - [SECURITY.md](SECURITY.md)

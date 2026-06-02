@@ -89,6 +89,14 @@ node scripts/generated-frontend-browser-smoke.mjs
 cargo audit
 ```
 
+Tagged releases also run `.github/workflows/release.yml`, which builds release-mode binaries for:
+
+- `x86_64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+Each release asset is uploaded as a `.tar.gz` archive with a matching `.sha256` checksum file.
+
 ## External tooling you may need
 
 Some flows depend on tools outside Rust:
@@ -155,6 +163,17 @@ When `stellarforge.toml`, lockfile semantics, or release artifacts change, updat
 - release docs in [docs/deployment-guide.md](docs/deployment-guide.md)
 - config docs in [docs/manifest-reference.md](docs/manifest-reference.md)
 - tests around lockfile, release reports, diff/drift/history, or rollback behavior
+
+### Repository release process
+
+For project releases of the `stellar-forge` binary:
+
+1. verify `Cargo.toml` has the intended package version
+2. update [CHANGELOG.md](CHANGELOG.md) with the release entry
+3. run the local quality gates that match the change
+4. commit and push the release-prep changes to `main`
+5. create and push an annotated tag such as `v0.1.0`
+6. verify the `Release binaries` workflow uploads the Linux and macOS archives to the GitHub release
 
 ## Coding guidelines
 
