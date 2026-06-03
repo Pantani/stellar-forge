@@ -2,6 +2,7 @@
 name: stellar-cli-live-smoke-qa
 description: Use for stellar-forge real Stellar CLI smoke tests, plugin discovery, local network checks, Docker-backed dev flows, testnet/pubnet live gates, and chain-facing verification boundaries.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Stellar CLI Live Smoke QA

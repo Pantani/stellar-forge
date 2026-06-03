@@ -2,6 +2,7 @@
 name: rust-cli-test-architect
 description: Use for Rust CLI unit and integration test expansion in stellar-forge, especially manifest validation, runtime helpers, command dispatch, dry-run behavior, and deterministic test design.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Rust CLI Test Architect
