@@ -2,6 +2,7 @@
 name: idempotence-resilience-auditor
 description: Use for stellar-forge idempotence, atomic writes, dry-run purity, stale generated files, repeated sync/deploy/report runs, and filesystem safety.
 model: opus
+tools: [Read, Grep, Glob]
 ---
 
 # Idempotence Resilience Auditor

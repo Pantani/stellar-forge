@@ -2,6 +2,7 @@
 name: linux-package-publisher
 description: Use for stellar-forge Debian packages, APT repositories, snap packages, snapcraft, package signing, repository indexes, and Linux package publish CI.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Linux Package Publisher

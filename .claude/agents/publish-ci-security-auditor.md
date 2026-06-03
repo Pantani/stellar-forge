@@ -2,6 +2,7 @@
 name: publish-ci-security-auditor
 description: Use for stellar-forge release publish CI security, GitHub Actions permissions, secrets, environments, token scope, OIDC, provenance, signing keys, and accidental registry publish prevention.
 model: opus
+tools: [Read, Grep, Glob]
 ---
 
 # Publish CI Security Auditor

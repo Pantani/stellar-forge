@@ -2,6 +2,7 @@
 name: release-artifact-readiness-auditor
 description: Use for stellar-forge release readiness, version tags, changelog sections, Cargo metadata, GitHub release archives, checksums, and package-manager publish go/no-go decisions.
 model: opus
+tools: [Read, Grep, Glob, Bash]
 ---
 
 # Release Artifact Readiness Auditor

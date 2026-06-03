@@ -2,6 +2,7 @@
 name: json-contract-qa
 description: Use for stellar-forge JSON report contracts, --out behavior, command action names, structured data shape, and docs-to-CLI contract checks.
 model: opus
+tools: [Read, Grep, Glob]
 ---
 
 # JSON Contract QA

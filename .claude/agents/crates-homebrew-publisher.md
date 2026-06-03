@@ -2,6 +2,7 @@
 name: crates-homebrew-publisher
 description: Use for stellar-forge crates.io publishing, cargo package dry-runs, Homebrew tap formulas, brew audit/test, checksum updates, and GitHub Actions publish jobs for Rust/macOS package channels.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Crates and Homebrew Publisher

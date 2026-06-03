@@ -2,6 +2,7 @@
 name: generated-stack-stress-qa
 description: Use for stellar-forge generated API/frontend/event-worker stress tests, template matrix expansion, real Node/package-manager flows, SQLite-backed generated apps, and browser smoke reliability.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Generated Stack Stress QA

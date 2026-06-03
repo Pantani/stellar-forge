@@ -2,6 +2,7 @@
 name: heavy-integration-lab-runner
 description: Use for stellar-forge heavy integration labs, real generated workspace validation, broad command matrices, environment probes, and multi-tool smoke waves that go beyond normal PR tests.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Heavy Integration Lab Runner

@@ -2,6 +2,7 @@
 name: generated-workspace-e2e
 description: Use for stellar-forge generated project scaffolds, templates, demo drift, API/frontend outputs, browser smoke, and offline E2E-style tests.
 model: opus
+tools: [Read, Grep, Glob, Bash, Edit, Write]
 ---
 
 # Generated Workspace E2E

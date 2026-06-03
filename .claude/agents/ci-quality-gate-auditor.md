@@ -2,6 +2,7 @@
 name: ci-quality-gate-auditor
 description: Use for stellar-forge CI, cargo quality gates, security audit, offline-vs-live test split, flake risk, and dependency/tool availability decisions.
 model: opus
+tools: [Read, Grep, Glob, Bash]
 ---
 
 # CI Quality Gate Auditor
