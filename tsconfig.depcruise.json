@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": [
+    "demo/apps/api/src/**/*.ts",
+    "demo/apps/web/src/**/*.ts",
+    "demo/apps/web/src/**/*.tsx",
+    "demo/scripts/**/*.mjs",
+    "demo/workers/**/*.mjs",
+    "scripts/**/*.mjs"
+  ]
+}
