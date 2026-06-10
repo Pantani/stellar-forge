@@ -109,6 +109,17 @@ module.exports = {
         path: "^demo/apps/(api|web)/src/",
       },
     },
+    {
+      name: "web-scripts-do-not-depend-on-api-internals",
+      severity: "error",
+      comment: "Web app scripts may automate the frontend surface, but must not import API internals.",
+      from: {
+        path: "^demo/apps/web/scripts/",
+      },
+      to: {
+        path: "^demo/apps/api/src/",
+      },
+    },
   ],
   options: {
     tsConfig: {
