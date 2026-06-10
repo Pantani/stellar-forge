@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::EnvironmentLock;
+use crate::model::{EnvironmentLock, TokenDeployment};
 
 pub(super) fn release_command(
     context: &AppContext,
@@ -126,24 +126,11 @@ pub fn release_drift(context: &AppContext, env: &str) -> Result<CommandReport> {
     let root = context.project_root();
     let expected_artifact = build_release_artifact(&manifest, &lockfile, env)?;
     let current_path = release_artifact_path(&root, env);
-    let current = if current_path.exists() {
-        let (summary, warning) = release_artifact_summary(&current_path, "current")?;
-        if let Some(warning) = warning {
-            report.warnings.push(warning);
-        }
-        Some((read_release_artifact_value(&current_path)?, summary))
-    } else {
-        None
-    };
+    let current = load_release_artifact_with_summary(&mut report, &current_path, "current")?;
     let history_paths = release_history_artifacts(&root, env)?;
-    let latest_history = if let Some(path) = history_paths.last() {
-        let (summary, warning) = release_artifact_summary(path, "history")?;
-        if let Some(warning) = warning {
-            report.warnings.push(warning);
-        }
-        Some((read_release_artifact_value(path)?, summary))
-    } else {
-        None
+    let latest_history = match history_paths.last() {
+        Some(path) => load_release_artifact_with_summary(&mut report, path, "history")?,
+        None => None,
     };
 
     report.checks.extend(release_state_checks(
@@ -152,34 +139,13 @@ pub fn release_drift(context: &AppContext, env: &str) -> Result<CommandReport> {
     report.checks.extend(release_registry_artifact_checks(
         &root, &manifest, &lockfile, env, false,
     ));
-    if let Some(environment) = lockfile.environments.get(env) {
-        if !context.globals.dry_run && context.command_exists("stellar") {
-            let probe_checks =
-                probe_release_deployments(context, &mut report, &manifest, env, environment)?;
-            report.checks.extend(probe_checks);
-        } else if !environment.contracts.is_empty() || !environment.tokens.is_empty() {
-            report.warnings.push(
-                "skipped on-chain contract fetch probes; run without `--dry-run` on a machine with `stellar` configured to verify deployed IDs"
-                    .to_string(),
-            );
-        }
-    }
-    if let Some((history_artifact, _)) = &latest_history {
-        let history_issues = release_artifact_diff(&expected_artifact, history_artifact);
-        report.checks.push(check(
-            format!("release:{env}:history:drift"),
-            if history_issues.is_empty() {
-                "ok"
-            } else {
-                "warn"
-            },
-            Some(if history_issues.is_empty() {
-                "latest archived release matches the current manifest and lockfile".to_string()
-            } else {
-                history_issues.join("; ")
-            }),
-        ));
-    }
+    append_release_probe_checks(context, &mut report, &manifest, &lockfile, env)?;
+    append_release_history_drift_check(
+        &mut report,
+        env,
+        &expected_artifact,
+        latest_history.as_ref(),
+    );
 
     let current_vs_expected = current
         .as_ref()
@@ -216,6 +182,70 @@ pub fn release_drift(context: &AppContext, env: &str) -> Result<CommandReport> {
         }
     }));
     Ok(report)
+}
+
+type ReleaseArtifactWithSummary = (Value, Value);
+
+fn load_release_artifact_with_summary(
+    report: &mut CommandReport,
+    path: &Path,
+    kind: &str,
+) -> Result<Option<ReleaseArtifactWithSummary>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let (summary, warning) = release_artifact_summary(path, kind)?;
+    if let Some(warning) = warning {
+        report.warnings.push(warning);
+    }
+    Ok(Some((read_release_artifact_value(path)?, summary)))
+}
+
+fn append_release_probe_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+) -> Result<()> {
+    let Some(environment) = lockfile.environments.get(env) else {
+        return Ok(());
+    };
+    if !context.globals.dry_run && context.command_exists("stellar") {
+        let probe_checks = probe_release_deployments(context, report, manifest, env, environment)?;
+        report.checks.extend(probe_checks);
+    } else if !environment.contracts.is_empty() || !environment.tokens.is_empty() {
+        report.warnings.push(
+            "skipped on-chain contract fetch probes; run without `--dry-run` on a machine with `stellar` configured to verify deployed IDs"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn append_release_history_drift_check(
+    report: &mut CommandReport,
+    env: &str,
+    expected_artifact: &Value,
+    latest_history: Option<&ReleaseArtifactWithSummary>,
+) {
+    let Some((history_artifact, _)) = latest_history else {
+        return;
+    };
+    let history_issues = release_artifact_diff(expected_artifact, history_artifact);
+    report.checks.push(check(
+        format!("release:{env}:history:drift"),
+        if history_issues.is_empty() {
+            "ok"
+        } else {
+            "warn"
+        },
+        Some(if history_issues.is_empty() {
+            "latest archived release matches the current manifest and lockfile".to_string()
+        } else {
+            history_issues.join("; ")
+        }),
+    ));
 }
 
 pub fn release_diff(context: &AppContext, env: &str, path: Option<&Path>) -> Result<CommandReport> {
@@ -361,90 +391,198 @@ pub(super) fn release_state_checks(
     let missing_status = if strict { "error" } else { "warn" };
     let mut checks = Vec::new();
 
+    append_release_contract_checks(
+        &mut checks,
+        manifest,
+        environment,
+        env,
+        contracts,
+        missing_status,
+    );
+
+    append_release_token_checks(
+        &mut checks,
+        manifest,
+        environment,
+        env,
+        tokens,
+        missing_status,
+    );
+
+    append_release_generated_env_checks(
+        &mut checks,
+        root,
+        manifest,
+        lockfile,
+        env,
+        strict,
+        generate_env,
+    );
+    append_release_artifact_checks(
+        &mut checks,
+        root,
+        manifest,
+        lockfile,
+        env,
+        strict,
+        missing_status,
+    );
+
+    checks
+}
+
+fn append_release_contract_checks(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    manifest: &Manifest,
+    environment: Option<&EnvironmentLock>,
+    env: &str,
+    contracts: Vec<String>,
+    missing_status: &'static str,
+) {
     for contract in contracts {
         let deployment = environment.and_then(|environment| environment.contracts.get(&contract));
-        let status = if deployment.is_some_and(|deployment| !deployment.contract_id.is_empty()) {
-            "ok"
-        } else {
-            missing_status
-        };
-        let detail = deployment
-            .map(|deployment| deployment.contract_id.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| Some("missing deployment in lockfile".to_string()));
-        checks.push(check(
-            format!("release:{env}:contract:{contract}"),
-            status,
-            detail,
+        checks.push(release_contract_deployment_check(
+            env,
+            &contract,
+            deployment,
+            missing_status,
         ));
-        if let (Some(config), Some(deployment)) = (
-            manifest.contracts.get(&contract),
-            deployment.filter(|deployment| !deployment.contract_id.is_empty()),
-        ) && deployment.alias != config.alias
-        {
-            checks.push(check(
-                format!("release:{env}:contract:{contract}:alias"),
-                "warn",
-                Some(format!(
-                    "lockfile alias `{}` differs from manifest alias `{}`",
-                    deployment.alias, config.alias
-                )),
-            ));
-        }
+        append_release_contract_alias_check(checks, manifest, env, &contract, deployment);
     }
+}
 
+fn release_contract_deployment_check(
+    env: &str,
+    contract: &str,
+    deployment: Option<&ContractDeployment>,
+    missing_status: &'static str,
+) -> crate::runtime::CheckResult {
+    let status = if deployment.is_some_and(|deployment| !deployment.contract_id.is_empty()) {
+        "ok"
+    } else {
+        missing_status
+    };
+    let detail = deployment
+        .map(|deployment| deployment.contract_id.clone())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some("missing deployment in lockfile".to_string()));
+    check(format!("release:{env}:contract:{contract}"), status, detail)
+}
+
+fn append_release_contract_alias_check(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    manifest: &Manifest,
+    env: &str,
+    contract: &str,
+    deployment: Option<&ContractDeployment>,
+) {
+    if let (Some(config), Some(deployment)) = (
+        manifest.contracts.get(contract),
+        deployment.filter(|deployment| !deployment.contract_id.is_empty()),
+    ) && deployment.alias != config.alias
+    {
+        checks.push(check(
+            format!("release:{env}:contract:{contract}:alias"),
+            "warn",
+            Some(format!(
+                "lockfile alias `{}` differs from manifest alias `{}`",
+                deployment.alias, config.alias
+            )),
+        ));
+    }
+}
+
+fn append_release_token_checks(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    manifest: &Manifest,
+    environment: Option<&EnvironmentLock>,
+    env: &str,
+    tokens: Vec<String>,
+    missing_status: &'static str,
+) {
     for token_name in tokens {
         let Some(token) = manifest.tokens.get(&token_name) else {
             continue;
         };
         let deployment = environment.and_then(|environment| environment.tokens.get(&token_name));
-        let (status, detail) = match deployment {
-            None => (missing_status, "missing deployment in lockfile".to_string()),
-            Some(deployment) if token.kind == "contract" && deployment.contract_id.is_empty() => (
-                missing_status,
-                "contract token is missing `contract_id` in lockfile".to_string(),
-            ),
-            Some(deployment) if token.kind != "contract" && deployment.asset.is_empty() => (
-                missing_status,
-                "asset token is missing `asset` in lockfile".to_string(),
-            ),
-            Some(deployment) if token.with_sac && deployment.sac_contract_id.is_empty() => (
-                missing_status,
-                "token is configured with `with_sac = true` but has no `sac_contract_id` in lockfile"
-                    .to_string(),
-            ),
-            Some(deployment) => (
-                "ok",
-                if !deployment.sac_contract_id.is_empty() {
-                    deployment.sac_contract_id.clone()
-                } else if !deployment.contract_id.is_empty() {
-                    deployment.contract_id.clone()
-                } else {
-                    deployment.asset.clone()
-                },
-            ),
-        };
+        let (status, detail) = release_token_deployment_status(token, deployment, missing_status);
         checks.push(check(
             format!("release:{env}:token:{token_name}"),
             status,
             Some(detail),
         ));
     }
+}
 
-    if generate_env {
-        let env_path = root.join(".env.generated");
-        checks.push(path_check(
-            format!("release:{env}:env-generated"),
-            &env_path,
+fn release_token_deployment_status(
+    token: &TokenConfig,
+    deployment: Option<&TokenDeployment>,
+    missing_status: &'static str,
+) -> (&'static str, String) {
+    match deployment {
+        None => (missing_status, "missing deployment in lockfile".to_string()),
+        Some(deployment) if token.kind == "contract" && deployment.contract_id.is_empty() => (
             missing_status,
-        ));
-        if env_path.exists() {
-            checks.push(release_env_consistency_check(
-                root, manifest, lockfile, env, strict,
-            ));
-        }
+            "contract token is missing `contract_id` in lockfile".to_string(),
+        ),
+        Some(deployment) if token.kind != "contract" && deployment.asset.is_empty() => (
+            missing_status,
+            "asset token is missing `asset` in lockfile".to_string(),
+        ),
+        Some(deployment) if token.with_sac && deployment.sac_contract_id.is_empty() => (
+            missing_status,
+            "token is configured with `with_sac = true` but has no `sac_contract_id` in lockfile"
+                .to_string(),
+        ),
+        Some(deployment) => ("ok", release_token_deployment_detail(deployment)),
     }
+}
 
+fn release_token_deployment_detail(deployment: &TokenDeployment) -> String {
+    if !deployment.sac_contract_id.is_empty() {
+        deployment.sac_contract_id.clone()
+    } else if !deployment.contract_id.is_empty() {
+        deployment.contract_id.clone()
+    } else {
+        deployment.asset.clone()
+    }
+}
+
+fn append_release_generated_env_checks(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+    strict: bool,
+    generate_env: bool,
+) {
+    if !generate_env {
+        return;
+    }
+    let missing_status = if strict { "error" } else { "warn" };
+    let env_path = root.join(".env.generated");
+    checks.push(path_check(
+        format!("release:{env}:env-generated"),
+        &env_path,
+        missing_status,
+    ));
+    if env_path.exists() {
+        checks.push(release_env_consistency_check(
+            root, manifest, lockfile, env, strict,
+        ));
+    }
+}
+
+fn append_release_artifact_checks(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    env: &str,
+    strict: bool,
+    missing_status: &'static str,
+) {
     let artifact_path = release_artifact_path(root, env);
     checks.push(path_check(
         format!("release:{env}:deploy-artifact"),
@@ -456,8 +594,6 @@ pub(super) fn release_state_checks(
             root, manifest, lockfile, env, strict,
         ));
     }
-
-    checks
 }
 
 fn release_env_consistency_check(

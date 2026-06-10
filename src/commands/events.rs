@@ -128,55 +128,7 @@ fn events_status(context: &AppContext) -> Result<CommandReport> {
         .and_then(|value| parse_event_env_u64(value))
         .or_else(|| (backend == "rpc-poller").then_some(7));
 
-    report.checks.push(check(
-        "events:api-root",
-        if paths.api_root.exists() {
-            "ok"
-        } else {
-            "warn"
-        },
-        Some(paths.api_root.display().to_string()),
-    ));
-    report.checks.push(check(
-        "events:schema",
-        if paths.schema_path.exists() {
-            "ok"
-        } else {
-            "warn"
-        },
-        Some(paths.schema_path.display().to_string()),
-    ));
-    report.checks.push(check(
-        "events:db",
-        if paths.db_path.exists() || paths.snapshot_path.exists() {
-            "ok"
-        } else {
-            "warn"
-        },
-        Some(paths.db_path.display().to_string()),
-    ));
-    report.checks.push(check(
-        "events:snapshot",
-        if paths.snapshot_path.exists() || paths.db_path.exists() {
-            "ok"
-        } else {
-            "warn"
-        },
-        Some(paths.snapshot_path.display().to_string()),
-    ));
-    report.checks.push(check(
-        "events:sqlite3",
-        if context.command_exists("sqlite3") {
-            "ok"
-        } else {
-            "warn"
-        },
-        Some(if context.command_exists("sqlite3") {
-            "available".to_string()
-        } else {
-            "not installed".to_string()
-        }),
-    ));
+    append_event_status_path_checks(context, &mut report, &paths);
     if let Some(config_check) = event_worker_config_check(&root, &manifest, true, "events:config") {
         report.checks.push(config_check);
     }
@@ -195,32 +147,8 @@ fn events_status(context: &AppContext) -> Result<CommandReport> {
         }
     };
 
-    let (cursor_source, cursors, cursor_names, cursor_count) = if let Some(rows) = sqlite_rows {
-        let mut cursor_names = rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>();
-        cursor_names.sort();
-        (
-            "sqlite",
-            cursor_rows_to_value(&rows)["cursors"].clone(),
-            cursor_names,
-            rows.len(),
-        )
-    } else {
-        let mut cursor_names = snapshot
-            .get("cursors")
-            .and_then(Value::as_object)
-            .map(|cursors| cursors.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        cursor_names.sort();
-        (
-            "snapshot",
-            snapshot
-                .get("cursors")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-            cursor_names.clone(),
-            cursor_names.len(),
-        )
-    };
+    let (cursor_source, cursors, cursor_names, cursor_count) =
+        event_status_cursor_data(sqlite_rows, &snapshot);
 
     let (total_events, latest_ledger, latest_observed_at) =
         match load_event_store_summary(context, &mut report, &paths.db_path) {
@@ -277,6 +205,86 @@ fn events_status(context: &AppContext) -> Result<CommandReport> {
         "cursors": cursors,
     }));
     Ok(report)
+}
+
+fn append_event_status_path_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    paths: &EventStorePaths,
+) {
+    report.checks.push(path_presence_check(
+        "events:api-root",
+        paths.api_root.exists(),
+        &paths.api_root,
+    ));
+    report.checks.push(path_presence_check(
+        "events:schema",
+        paths.schema_path.exists(),
+        &paths.schema_path,
+    ));
+    report.checks.push(path_presence_check(
+        "events:db",
+        paths.db_path.exists() || paths.snapshot_path.exists(),
+        &paths.db_path,
+    ));
+    report.checks.push(path_presence_check(
+        "events:snapshot",
+        paths.snapshot_path.exists() || paths.db_path.exists(),
+        &paths.snapshot_path,
+    ));
+    let sqlite_available = context.command_exists("sqlite3");
+    report.checks.push(check(
+        "events:sqlite3",
+        if sqlite_available { "ok" } else { "warn" },
+        Some(if sqlite_available {
+            "available".to_string()
+        } else {
+            "not installed".to_string()
+        }),
+    ));
+}
+
+fn path_presence_check(
+    label: &'static str,
+    present: bool,
+    path: &Path,
+) -> crate::runtime::CheckResult {
+    check(
+        label,
+        if present { "ok" } else { "warn" },
+        Some(path.display().to_string()),
+    )
+}
+
+fn event_status_cursor_data(
+    sqlite_rows: Option<Vec<EventCursorRow>>,
+    snapshot: &Value,
+) -> (&'static str, Value, Vec<String>, usize) {
+    if let Some(rows) = sqlite_rows {
+        let mut cursor_names = rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>();
+        cursor_names.sort();
+        return (
+            "sqlite",
+            cursor_rows_to_value(&rows)["cursors"].clone(),
+            cursor_names,
+            rows.len(),
+        );
+    }
+    let mut cursor_names = snapshot
+        .get("cursors")
+        .and_then(Value::as_object)
+        .map(|cursors| cursors.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    cursor_names.sort();
+    (
+        "snapshot",
+        snapshot
+            .get("cursors")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        cursor_names.clone(),
+        cursor_names.len(),
+    )
 }
 
 pub(super) fn events_export(

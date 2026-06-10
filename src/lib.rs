@@ -1,3 +1,5 @@
+#![deny(clippy::cognitive_complexity)]
+
 mod cli;
 mod commands;
 mod model;
