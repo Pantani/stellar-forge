@@ -1,0 +1,16 @@
+{
+  "name": "stellar-forge-architecture-checks",
+  "private": true,
+  "description": "Dependency analysis tooling for the generated JavaScript and TypeScript demo surfaces.",
+  "workspaces": [
+    "demo/apps/api",
+    "demo/apps/web"
+  ],
+  "scripts": {
+    "deps:check": "depcruise --config .dependency-cruiser.cjs --output-type err-long demo/apps/api/src demo/apps/web/src demo/scripts demo/workers scripts"
+  },
+  "devDependencies": {
+    "dependency-cruiser": "^17.4.3",
+    "typescript": "^6.0.3"
+  }
+}
