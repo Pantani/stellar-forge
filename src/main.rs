@@ -1,3 +1,5 @@
+#![deny(clippy::cognitive_complexity)]
+
 fn main() {
     use std::io::{self, Write};
 

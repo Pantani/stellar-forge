@@ -699,27 +699,8 @@ fn project_adopt_scaffold(context: &AppContext) -> Result<CommandReport> {
         );
     }
 
-    if manifest.project.name.trim().is_empty() {
-        manifest.project.name = baseline.project.name.clone();
-    }
-    if manifest.project.slug.trim().is_empty() {
-        manifest.project.slug = baseline.project.slug.clone();
-    }
-    if manifest.project.version.trim().is_empty() {
-        manifest.project.version = baseline.project.version.clone();
-    }
-    if let Some(detected_package_manager) = detected_package_manager {
-        manifest.project.package_manager = detected_package_manager;
-    } else if manifest.project.package_manager.trim().is_empty() {
-        manifest.project.package_manager = baseline.project.package_manager.clone();
-    }
-
-    if manifest.defaults.output.trim().is_empty() {
-        manifest.defaults.output = baseline.defaults.output.clone();
-    }
-    if manifest.networks.is_empty() {
-        manifest.networks = baseline.networks.clone();
-    }
+    apply_scaffold_project_defaults(&mut manifest, &baseline, detected_package_manager);
+    apply_scaffold_manifest_defaults(&mut manifest, &baseline);
     for (env_name, network) in &imported_environments.networks {
         manifest.networks.insert(env_name.clone(), network.clone());
     }
@@ -730,59 +711,13 @@ fn project_adopt_scaffold(context: &AppContext) -> Result<CommandReport> {
         manifest.wallets = baseline.wallets.clone();
     }
 
-    for (name, path) in detected_contracts {
-        let bindings = detected_bindings.get(&name).cloned().unwrap_or_default();
-        let deploy_on = imported_environments
-            .contract_deploy_on
-            .get(&name)
-            .map(|environments| environments.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_else(|| vec!["local".to_string(), "testnet".to_string()]);
-        let alias = imported_environments
-            .contract_aliases
-            .get(&name)
-            .cloned()
-            .unwrap_or_else(|| name.clone());
-        let entry = manifest
-            .contracts
-            .entry(name.clone())
-            .or_insert_with(|| ContractConfig {
-                path: path.clone(),
-                alias: alias.clone(),
-                template: "adopted".to_string(),
-                bindings: bindings.clone(),
-                deploy_on: deploy_on.clone(),
-                init: None,
-            });
-        if entry.path.trim().is_empty() {
-            entry.path = path;
-        }
-        if entry.alias.trim().is_empty() {
-            entry.alias = alias;
-        }
-        if entry.template.trim().is_empty() {
-            entry.template = "adopted".to_string();
-        }
-        if !bindings.is_empty() {
-            entry.bindings = bindings;
-        }
-        if entry.deploy_on.is_empty() {
-            entry.deploy_on = deploy_on;
-        }
-    }
-
-    if root.join("apps/api").exists() {
-        manifest.api.get_or_insert(ApiConfig {
-            enabled: true,
-            openapi: true,
-            ..ApiConfig::default()
-        });
-    }
-    if root.join("apps/web").exists() {
-        manifest.frontend.get_or_insert(FrontendConfig {
-            enabled: true,
-            framework: "react-vite".to_string(),
-        });
-    }
+    adopt_detected_contracts(
+        &mut manifest,
+        detected_contracts,
+        &detected_bindings,
+        &imported_environments,
+    );
+    adopt_detected_app_modules(&mut manifest, &root);
     if scaffold_frontend_detected && !root.join("apps/web").exists() {
         report.warnings.push(
             "Scaffold frontend detected at the project root; preserved unmanaged outside `apps/web`"
@@ -790,32 +725,7 @@ fn project_adopt_scaffold(context: &AppContext) -> Result<CommandReport> {
         );
     }
 
-    if manifest.defaults.network.trim().is_empty()
-        || !manifest.networks.contains_key(&manifest.defaults.network)
-    {
-        manifest.defaults.network =
-            preferred_network_name(&manifest.networks, &imported_environments.environments)
-                .unwrap_or_else(|| baseline.defaults.network.clone());
-    }
-    if manifest.defaults.identity.trim().is_empty()
-        || !manifest
-            .identities
-            .contains_key(&manifest.defaults.identity)
-    {
-        manifest.defaults.identity = if manifest
-            .identities
-            .contains_key(&baseline.defaults.identity)
-        {
-            baseline.defaults.identity.clone()
-        } else {
-            manifest
-                .identities
-                .keys()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| baseline.defaults.identity.clone())
-        };
-    }
+    apply_scaffold_default_refs(&mut manifest, &baseline, &imported_environments);
 
     save_manifest(context, &mut report, &manifest)?;
     save_lockfile(context, &mut report, &imported_environments.lockfile)?;
@@ -831,6 +741,147 @@ fn project_adopt_scaffold(context: &AppContext) -> Result<CommandReport> {
         "scaffold_frontend_detected": scaffold_frontend_detected,
     }));
     Ok(report)
+}
+
+fn apply_scaffold_project_defaults(
+    manifest: &mut Manifest,
+    baseline: &Manifest,
+    detected_package_manager: Option<String>,
+) {
+    if manifest.project.name.trim().is_empty() {
+        manifest.project.name = baseline.project.name.clone();
+    }
+    if manifest.project.slug.trim().is_empty() {
+        manifest.project.slug = baseline.project.slug.clone();
+    }
+    if manifest.project.version.trim().is_empty() {
+        manifest.project.version = baseline.project.version.clone();
+    }
+    if let Some(detected_package_manager) = detected_package_manager {
+        manifest.project.package_manager = detected_package_manager;
+    } else if manifest.project.package_manager.trim().is_empty() {
+        manifest.project.package_manager = baseline.project.package_manager.clone();
+    }
+}
+
+fn apply_scaffold_manifest_defaults(manifest: &mut Manifest, baseline: &Manifest) {
+    if manifest.defaults.output.trim().is_empty() {
+        manifest.defaults.output = baseline.defaults.output.clone();
+    }
+    if manifest.networks.is_empty() {
+        manifest.networks = baseline.networks.clone();
+    }
+}
+
+fn adopt_detected_contracts(
+    manifest: &mut Manifest,
+    detected_contracts: Vec<(String, String)>,
+    detected_bindings: &BTreeMap<String, Vec<String>>,
+    imported_environments: &ScaffoldEnvironmentImport,
+) {
+    for (name, path) in detected_contracts {
+        let bindings = detected_bindings.get(&name).cloned().unwrap_or_default();
+        let deploy_on = imported_environments
+            .contract_deploy_on
+            .get(&name)
+            .map(|environments| environments.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec!["local".to_string(), "testnet".to_string()]);
+        let alias = imported_environments
+            .contract_aliases
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| name.clone());
+        upsert_adopted_contract(manifest, name, path, alias, bindings, deploy_on);
+    }
+}
+
+fn upsert_adopted_contract(
+    manifest: &mut Manifest,
+    name: String,
+    path: String,
+    alias: String,
+    bindings: Vec<String>,
+    deploy_on: Vec<String>,
+) {
+    let entry = manifest
+        .contracts
+        .entry(name)
+        .or_insert_with(|| ContractConfig {
+            path: path.clone(),
+            alias: alias.clone(),
+            template: "adopted".to_string(),
+            bindings: bindings.clone(),
+            deploy_on: deploy_on.clone(),
+            init: None,
+        });
+    if entry.path.trim().is_empty() {
+        entry.path = path;
+    }
+    if entry.alias.trim().is_empty() {
+        entry.alias = alias;
+    }
+    if entry.template.trim().is_empty() {
+        entry.template = "adopted".to_string();
+    }
+    if !bindings.is_empty() {
+        entry.bindings = bindings;
+    }
+    if entry.deploy_on.is_empty() {
+        entry.deploy_on = deploy_on;
+    }
+}
+
+fn adopt_detected_app_modules(manifest: &mut Manifest, root: &Path) {
+    if root.join("apps/api").exists() {
+        manifest.api.get_or_insert(ApiConfig {
+            enabled: true,
+            openapi: true,
+            ..ApiConfig::default()
+        });
+    }
+    if root.join("apps/web").exists() {
+        manifest.frontend.get_or_insert(FrontendConfig {
+            enabled: true,
+            framework: "react-vite".to_string(),
+        });
+    }
+}
+
+fn apply_scaffold_default_refs(
+    manifest: &mut Manifest,
+    baseline: &Manifest,
+    imported_environments: &ScaffoldEnvironmentImport,
+) {
+    if manifest.defaults.network.trim().is_empty()
+        || !manifest.networks.contains_key(&manifest.defaults.network)
+    {
+        manifest.defaults.network =
+            preferred_network_name(&manifest.networks, &imported_environments.environments)
+                .unwrap_or_else(|| baseline.defaults.network.clone());
+    }
+    if manifest.defaults.identity.trim().is_empty()
+        || !manifest
+            .identities
+            .contains_key(&manifest.defaults.identity)
+    {
+        manifest.defaults.identity = preferred_identity_name(manifest, baseline);
+    }
+}
+
+fn preferred_identity_name(manifest: &Manifest, baseline: &Manifest) -> String {
+    if manifest
+        .identities
+        .contains_key(&baseline.defaults.identity)
+    {
+        baseline.defaults.identity.clone()
+    } else {
+        manifest
+            .identities
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| baseline.defaults.identity.clone())
+    }
 }
 
 #[derive(Default)]
@@ -1250,6 +1301,34 @@ fn import_environment_contracts(
     aliases: &BTreeMap<String, String>,
     import: &mut ScaffoldEnvironmentImport,
 ) -> usize {
+    let merged = merged_environment_contracts(env_contracts, top_level_contracts);
+
+    let mut deployment_count = 0;
+    for (contract_name, value) in merged {
+        let (alias, explicit_alias) = imported_contract_alias(&contract_name, &value, aliases);
+        record_imported_contract_alias(import, &contract_name, &alias, explicit_alias);
+        import
+            .contract_deploy_on
+            .entry(contract_name.clone())
+            .or_default()
+            .insert(env_name.to_string());
+
+        if let Some(deployment) = imported_contract_deployment(value, alias) {
+            import
+                .lockfile
+                .environment_mut(env_name)
+                .contracts
+                .insert(contract_name, deployment);
+            deployment_count += 1;
+        }
+    }
+    deployment_count
+}
+
+fn merged_environment_contracts(
+    env_contracts: Option<&TomlValue>,
+    top_level_contracts: Option<&TomlTable>,
+) -> BTreeMap<String, TomlValue> {
     let mut merged = BTreeMap::new();
     if let Some(TomlValue::Table(table)) = env_contracts {
         for (name, value) in table {
@@ -1261,65 +1340,71 @@ fn import_environment_contracts(
             merged.entry(name.clone()).or_insert_with(|| value.clone());
         }
     }
+    merged
+}
 
-    let mut deployment_count = 0;
-    for (contract_name, value) in merged {
-        let explicit_alias = match value.as_table() {
-            Some(table) => toml_string(table, &["alias", "name"])
-                .or_else(|| aliases.get(&contract_name).cloned()),
-            None => aliases.get(&contract_name).cloned(),
-        };
-        let alias = explicit_alias
+fn imported_contract_alias(
+    contract_name: &str,
+    value: &TomlValue,
+    aliases: &BTreeMap<String, String>,
+) -> (String, bool) {
+    let explicit_alias = match value.as_table() {
+        Some(table) => {
+            toml_string(table, &["alias", "name"]).or_else(|| aliases.get(contract_name).cloned())
+        }
+        None => aliases.get(contract_name).cloned(),
+    };
+    (
+        explicit_alias
             .clone()
-            .unwrap_or_else(|| contract_name.clone());
-        match import.contract_aliases.entry(contract_name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(alias.clone());
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry)
-                if explicit_alias.is_some() && entry.get() == &contract_name =>
-            {
-                entry.insert(alias.clone());
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-        import
-            .contract_deploy_on
-            .entry(contract_name.clone())
-            .or_default()
-            .insert(env_name.to_string());
+            .unwrap_or_else(|| contract_name.to_string()),
+        explicit_alias.is_some(),
+    )
+}
 
-        let deployment =
-            match value {
-                TomlValue::String(contract_id) if !contract_id.trim().is_empty() => {
-                    Some(ContractDeployment {
-                        contract_id,
-                        alias,
-                        wasm_hash: String::new(),
-                        tx_hash: String::new(),
-                        deployed_at: None,
-                    })
-                }
-                TomlValue::Table(table) => toml_string(&table, &["contract_id", "id", "address"])
-                    .map(|contract_id| ContractDeployment {
-                        contract_id,
-                        alias,
-                        wasm_hash: toml_string(&table, &["wasm_hash"]).unwrap_or_default(),
-                        tx_hash: toml_string(&table, &["tx_hash"]).unwrap_or_default(),
-                        deployed_at: None,
-                    }),
-                _ => None,
-            };
-        if let Some(deployment) = deployment {
-            import
-                .lockfile
-                .environment_mut(env_name)
-                .contracts
-                .insert(contract_name, deployment);
-            deployment_count += 1;
+fn record_imported_contract_alias(
+    import: &mut ScaffoldEnvironmentImport,
+    contract_name: &str,
+    alias: &str,
+    explicit_alias: bool,
+) {
+    match import.contract_aliases.entry(contract_name.to_string()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(alias.to_string());
         }
+        std::collections::btree_map::Entry::Occupied(mut entry)
+            if explicit_alias && entry.get() == contract_name =>
+        {
+            entry.insert(alias.to_string());
+        }
+        std::collections::btree_map::Entry::Occupied(_) => {}
     }
-    deployment_count
+}
+
+fn imported_contract_deployment(value: TomlValue, alias: String) -> Option<ContractDeployment> {
+    match value {
+        TomlValue::String(contract_id) if !contract_id.trim().is_empty() => {
+            Some(ContractDeployment {
+                contract_id,
+                alias,
+                wasm_hash: String::new(),
+                tx_hash: String::new(),
+                deployed_at: None,
+            })
+        }
+        TomlValue::Table(table) => {
+            toml_string(&table, &["contract_id", "id", "address"]).map(|contract_id| {
+                ContractDeployment {
+                    contract_id,
+                    alias,
+                    wasm_hash: toml_string(&table, &["wasm_hash"]).unwrap_or_default(),
+                    tx_hash: toml_string(&table, &["tx_hash"]).unwrap_or_default(),
+                    deployed_at: None,
+                }
+            })
+        }
+        _ => None,
+    }
 }
 
 fn toml_string(table: &TomlTable, keys: &[&str]) -> Option<String> {
@@ -2347,98 +2432,146 @@ fn evaluate_scenario_assertions(
     let actual_scenario_status = aggregate_status(&overall_status);
     let mut results = Vec::new();
     for (index, assertion) in assertions.iter().enumerate() {
-        let mut issues = Vec::new();
-        let actual = match assertion {
-            ScenarioAssertion::Status { status } => {
-                if &actual_scenario_status != status {
-                    issues.push(format!(
-                        "expected scenario status `{status}` but got `{actual_scenario_status}`"
-                    ));
-                }
-                json!({ "status": actual_scenario_status })
-            }
-            ScenarioAssertion::Step {
-                step,
-                status,
-                command_contains,
-                artifact_contains,
-                warning_contains,
-            } => {
-                let report = step_reports.get(step.saturating_sub(1)).ok_or_else(|| {
-                    anyhow!("scenario `{scenario_name}` assertion references missing step `{step}`")
-                })?;
-                if let Some(status) = status
-                    && &report.status != status
-                {
-                    issues.push(format!(
-                        "expected step `{step}` status `{status}` but got `{}`",
-                        report.status
-                    ));
-                }
-                for needle in command_contains {
-                    if !report
-                        .commands
-                        .iter()
-                        .any(|command| command.contains(needle))
-                    {
-                        issues.push(format!(
-                            "expected step `{step}` commands to contain `{needle}`"
-                        ));
-                    }
-                }
-                for needle in artifact_contains {
-                    if !report
-                        .artifacts
-                        .iter()
-                        .any(|artifact| artifact.contains(needle))
-                    {
-                        issues.push(format!(
-                            "expected step `{step}` artifacts to contain `{needle}`"
-                        ));
-                    }
-                }
-                for needle in warning_contains {
-                    if !report
-                        .warnings
-                        .iter()
-                        .any(|warning| warning.contains(needle))
-                    {
-                        issues.push(format!(
-                            "expected step `{step}` warnings to contain `{needle}`"
-                        ));
-                    }
-                }
-                json!({
-                    "step": step,
-                    "status": report.status,
-                    "commands": report.commands,
-                    "artifacts": report.artifacts,
-                    "warnings": report.warnings,
-                })
-            }
-        };
-        let check_result = check(
-            format!("scenario:{scenario_name}:assertion:{}", index + 1),
-            if issues.is_empty() { "ok" } else { "error" },
-            Some(if issues.is_empty() {
-                "assertion matched".to_string()
-            } else {
-                issues.join("; ")
-            }),
-        );
-        let configured = serde_json::to_value(assertion)?;
-        results.push((
-            check_result,
-            json!({
-                "index": index + 1,
-                "configured": configured,
-                "status": if issues.is_empty() { "ok" } else { "error" },
-                "issues": issues,
-                "actual": actual,
-            }),
-        ));
+        results.push(evaluate_scenario_assertion(
+            scenario_name,
+            index,
+            assertion,
+            step_reports,
+            &actual_scenario_status,
+        )?);
     }
     Ok(results)
+}
+
+fn evaluate_scenario_assertion(
+    scenario_name: &str,
+    index: usize,
+    assertion: &ScenarioAssertion,
+    step_reports: &[CommandReport],
+    actual_scenario_status: &str,
+) -> Result<(crate::runtime::CheckResult, Value)> {
+    let mut issues = Vec::new();
+    let actual = match assertion {
+        ScenarioAssertion::Status { status } => {
+            if actual_scenario_status != status {
+                issues.push(format!(
+                    "expected scenario status `{status}` but got `{actual_scenario_status}`"
+                ));
+            }
+            json!({ "status": actual_scenario_status })
+        }
+        ScenarioAssertion::Step { .. } => {
+            evaluate_step_assertion(scenario_name, step_reports, assertion, &mut issues)?
+        }
+    };
+    scenario_assertion_result(scenario_name, index, assertion, actual, issues)
+}
+
+fn evaluate_step_assertion(
+    scenario_name: &str,
+    step_reports: &[CommandReport],
+    assertion: &ScenarioAssertion,
+    issues: &mut Vec<String>,
+) -> Result<Value> {
+    let ScenarioAssertion::Step {
+        step,
+        status,
+        command_contains,
+        artifact_contains,
+        warning_contains,
+    } = assertion
+    else {
+        unreachable!("evaluate_step_assertion only accepts step assertions");
+    };
+    let step_index = step.checked_sub(1).ok_or_else(|| {
+        anyhow!(
+            "scenario `{scenario_name}` assertion references invalid step `{step}`; step indexes start at 1"
+        )
+    })?;
+    let report = step_reports.get(step_index).ok_or_else(|| {
+        anyhow!("scenario `{scenario_name}` assertion references missing step `{step}`")
+    })?;
+    if let Some(status) = status.as_deref()
+        && report.status != status
+    {
+        issues.push(format!(
+            "expected step `{step}` status `{status}` but got `{}`",
+            report.status
+        ));
+    }
+    append_contains_issues(
+        *step,
+        "commands",
+        &report.commands,
+        command_contains,
+        issues,
+    );
+    append_contains_issues(
+        *step,
+        "artifacts",
+        &report.artifacts,
+        artifact_contains,
+        issues,
+    );
+    append_contains_issues(
+        *step,
+        "warnings",
+        &report.warnings,
+        warning_contains,
+        issues,
+    );
+    Ok(json!({
+        "step": step,
+        "status": report.status,
+        "commands": report.commands,
+        "artifacts": report.artifacts,
+        "warnings": report.warnings,
+    }))
+}
+
+fn append_contains_issues(
+    step: usize,
+    label: &str,
+    values: &[String],
+    needles: &[String],
+    issues: &mut Vec<String>,
+) {
+    for needle in needles {
+        if !values.iter().any(|value| value.contains(needle)) {
+            issues.push(format!(
+                "expected step `{step}` {label} to contain `{needle}`"
+            ));
+        }
+    }
+}
+
+fn scenario_assertion_result(
+    scenario_name: &str,
+    index: usize,
+    assertion: &ScenarioAssertion,
+    actual: Value,
+    issues: Vec<String>,
+) -> Result<(crate::runtime::CheckResult, Value)> {
+    let check_result = check(
+        format!("scenario:{scenario_name}:assertion:{}", index + 1),
+        if issues.is_empty() { "ok" } else { "error" },
+        Some(if issues.is_empty() {
+            "assertion matched".to_string()
+        } else {
+            issues.join("; ")
+        }),
+    );
+    let configured = serde_json::to_value(assertion)?;
+    Ok((
+        check_result,
+        json!({
+            "index": index + 1,
+            "configured": configured,
+            "status": if issues.is_empty() { "ok" } else { "error" },
+            "issues": issues,
+            "actual": actual,
+        }),
+    ))
 }
 
 fn refresh_watch_api_scaffold(

@@ -352,21 +352,7 @@ impl Manifest {
 
     pub fn validate(&self, root: &Path) -> Vec<String> {
         let mut errors = Vec::new();
-        if self.project.name.trim().is_empty() {
-            errors.push("project.name is required".to_string());
-        }
-        if self.project.slug.trim().is_empty() {
-            errors.push("project.slug is required".to_string());
-        }
-        if !matches!(
-            self.project.package_manager.as_str(),
-            "pnpm" | "npm" | "yarn" | "bun"
-        ) {
-            errors.push(format!(
-                "project.package_manager `{}` must be one of pnpm, npm, yarn, or bun",
-                self.project.package_manager
-            ));
-        }
+        validate_project_config(self, &mut errors);
         push_unsafe_key_errors(&mut errors, "network", self.networks.keys());
         push_unsafe_key_errors(&mut errors, "identity", self.identities.keys());
         push_unsafe_key_errors(&mut errors, "wallet", self.wallets.keys());
@@ -374,198 +360,11 @@ impl Manifest {
         push_unsafe_key_errors(&mut errors, "contract", self.contracts.keys());
         push_unsafe_key_errors(&mut errors, "release target", self.release.keys());
         push_unsafe_key_errors(&mut errors, "scenario", self.scenarios.keys());
-        if !self.defaults.network.is_empty() && !self.networks.contains_key(&self.defaults.network)
-        {
-            errors.push(format!(
-                "defaults.network references missing network `{}`",
-                self.defaults.network
-            ));
-        }
-        if !self.defaults.identity.is_empty()
-            && !self.identities.contains_key(&self.defaults.identity)
-        {
-            errors.push(format!(
-                "defaults.identity references missing identity `{}`",
-                self.defaults.identity
-            ));
-        }
-        for (name, wallet) in &self.wallets {
-            if wallet.kind == "classic"
-                && !wallet.identity.is_empty()
-                && !self.identities.contains_key(&wallet.identity)
-            {
-                errors.push(format!(
-                    "wallet `{name}` references missing identity `{}`",
-                    wallet.identity
-                ));
-            }
-            if wallet.kind == "smart" {
-                if wallet.mode.as_deref().unwrap_or_default().trim().is_empty() {
-                    errors.push(format!("smart wallet `{name}` is missing `mode`"));
-                }
-                if let Some(controller_identity) = &wallet.controller_identity
-                    && !controller_identity.trim().is_empty()
-                    && !self.identities.contains_key(controller_identity)
-                {
-                    errors.push(format!(
-                        "smart wallet `{name}` references missing controller identity `{controller_identity}`"
-                    ));
-                }
-                if let Some(policy_contract) = &wallet.policy_contract
-                    && !self.contracts.contains_key(policy_contract)
-                {
-                    errors.push(format!(
-                        "smart wallet `{name}` references missing policy contract `{policy_contract}`"
-                    ));
-                }
-            }
-        }
-        for (name, token) in &self.tokens {
-            for field in [&token.issuer, &token.distribution] {
-                if let Some(reference) = parse_manifest_ref(field) {
-                    match reference {
-                        ManifestRef::Identity(identity) if !is_safe_name(&identity) => {
-                            errors.push(format!(
-                                "token `{name}` references unsafe identity `{identity}`"
-                            ));
-                        }
-                        ManifestRef::Wallet(wallet) if !is_safe_name(&wallet) => {
-                            errors.push(format!(
-                                "token `{name}` references unsafe wallet `{wallet}`"
-                            ));
-                        }
-                        ManifestRef::Identity(identity)
-                            if !self.identities.contains_key(&identity) =>
-                        {
-                            errors.push(format!(
-                                "token `{name}` references missing identity `{identity}`"
-                            ));
-                        }
-                        ManifestRef::Wallet(wallet) if !self.wallets.contains_key(&wallet) => {
-                            errors.push(format!(
-                                "token `{name}` references missing wallet `{wallet}`"
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if token.kind == "contract" && !self.contracts.contains_key(name) {
-                errors.push(format!(
-                    "token `{name}` is declared as a contract token but no matching contract `{name}` exists in the manifest"
-                ));
-            }
-        }
-        for (name, scenario) in &self.scenarios {
-            if scenario.steps.is_empty() {
-                errors.push(format!("scenario `{name}` must declare at least one step"));
-            }
-            if let Some(network) = scenario.network.as_deref()
-                && !self.networks.contains_key(network)
-            {
-                errors.push(format!(
-                    "scenario `{name}` references missing network `{network}`"
-                ));
-            }
-            if let Some(identity) = scenario.identity.as_deref()
-                && !self.identities.contains_key(identity)
-            {
-                errors.push(format!(
-                    "scenario `{name}` references missing identity `{identity}`"
-                ));
-            }
-            for step in &scenario.steps {
-                match step {
-                    ScenarioStep::ContractBuild {
-                        contract: Some(contract),
-                        ..
-                    }
-                    | ScenarioStep::ContractDeploy { contract, .. }
-                    | ScenarioStep::ContractCall { contract, .. }
-                        if !self.contracts.contains_key(contract) =>
-                    {
-                        errors.push(format!(
-                            "scenario `{name}` references missing contract `{contract}`"
-                        ));
-                    }
-                    _ => {}
-                }
-                if let ScenarioStep::TokenMint { token, .. } = step
-                    && !self.tokens.contains_key(token)
-                {
-                    errors.push(format!(
-                        "scenario `{name}` references missing token `{token}`"
-                    ));
-                }
-                match step {
-                    ScenarioStep::ReleasePlan { env: Some(env) }
-                    | ScenarioStep::ReleaseVerify { env: Some(env) }
-                    | ScenarioStep::ContractDeploy { env: Some(env), .. }
-                        if !self.networks.contains_key(env) =>
-                    {
-                        errors.push(format!(
-                            "scenario `{name}` references missing network `{env}`"
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            for assertion in &scenario.assertions {
-                match assertion {
-                    ScenarioAssertion::Status { status } => {
-                        if !matches!(status.as_str(), "ok" | "warn" | "error") {
-                            errors.push(format!(
-                                "scenario `{name}` assertion status `{status}` must be one of ok, warn, or error"
-                            ));
-                        }
-                    }
-                    ScenarioAssertion::Step {
-                        step,
-                        status,
-                        command_contains,
-                        artifact_contains,
-                        warning_contains,
-                    } => {
-                        if *step == 0 || *step > scenario.steps.len() {
-                            errors.push(format!(
-                                "scenario `{name}` assertion references missing step `{step}`"
-                            ));
-                        }
-                        if let Some(status) = status
-                            && !matches!(status.as_str(), "ok" | "warn" | "error")
-                        {
-                            errors.push(format!(
-                                "scenario `{name}` step assertion status `{status}` must be one of ok, warn, or error"
-                            ));
-                        }
-                        if status.is_none()
-                            && command_contains.is_empty()
-                            && artifact_contains.is_empty()
-                            && warning_contains.is_empty()
-                        {
-                            errors.push(format!(
-                                "scenario `{name}` step assertion for step `{step}` must declare at least one expectation"
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        for (name, contract) in &self.contracts {
-            if contract.path.trim().is_empty() {
-                errors.push(format!("contract `{name}` is missing path"));
-            } else if !is_safe_relative_path(Path::new(&contract.path)) {
-                errors.push(format!(
-                    "contract `{name}` path `{}` must stay inside the project root",
-                    contract.path
-                ));
-            } else if !root.join(&contract.path).exists() {
-                errors.push(format!(
-                    "contract `{name}` points to missing path `{}`",
-                    contract.path
-                ));
-            }
-        }
+        validate_default_refs(self, &mut errors);
+        validate_wallets(self, &mut errors);
+        validate_tokens(self, &mut errors);
+        validate_scenarios(self, &mut errors);
+        validate_contract_paths(self, root, &mut errors);
         errors
     }
 
@@ -587,6 +386,274 @@ impl Manifest {
             Ok(name)
         } else {
             bail!("identity `{name}` is not defined in the manifest");
+        }
+    }
+}
+
+fn validate_project_config(manifest: &Manifest, errors: &mut Vec<String>) {
+    if manifest.project.name.trim().is_empty() {
+        errors.push("project.name is required".to_string());
+    }
+    if manifest.project.slug.trim().is_empty() {
+        errors.push("project.slug is required".to_string());
+    }
+    if !matches!(
+        manifest.project.package_manager.as_str(),
+        "pnpm" | "npm" | "yarn" | "bun"
+    ) {
+        errors.push(format!(
+            "project.package_manager `{}` must be one of pnpm, npm, yarn, or bun",
+            manifest.project.package_manager
+        ));
+    }
+}
+
+fn validate_default_refs(manifest: &Manifest, errors: &mut Vec<String>) {
+    if !manifest.defaults.network.is_empty()
+        && !manifest.networks.contains_key(&manifest.defaults.network)
+    {
+        errors.push(format!(
+            "defaults.network references missing network `{}`",
+            manifest.defaults.network
+        ));
+    }
+    if !manifest.defaults.identity.is_empty()
+        && !manifest
+            .identities
+            .contains_key(&manifest.defaults.identity)
+    {
+        errors.push(format!(
+            "defaults.identity references missing identity `{}`",
+            manifest.defaults.identity
+        ));
+    }
+}
+
+fn validate_wallets(manifest: &Manifest, errors: &mut Vec<String>) {
+    for (name, wallet) in &manifest.wallets {
+        if wallet.kind == "classic"
+            && !wallet.identity.is_empty()
+            && !manifest.identities.contains_key(&wallet.identity)
+        {
+            errors.push(format!(
+                "wallet `{name}` references missing identity `{}`",
+                wallet.identity
+            ));
+        }
+        validate_smart_wallet(manifest, name, wallet, errors);
+    }
+}
+
+fn validate_smart_wallet(
+    manifest: &Manifest,
+    name: &str,
+    wallet: &WalletConfig,
+    errors: &mut Vec<String>,
+) {
+    if wallet.kind != "smart" {
+        return;
+    }
+    if wallet.mode.as_deref().unwrap_or_default().trim().is_empty() {
+        errors.push(format!("smart wallet `{name}` is missing `mode`"));
+    }
+    if let Some(controller_identity) = &wallet.controller_identity
+        && !controller_identity.trim().is_empty()
+        && !manifest.identities.contains_key(controller_identity)
+    {
+        errors.push(format!(
+            "smart wallet `{name}` references missing controller identity `{controller_identity}`"
+        ));
+    }
+    if let Some(policy_contract) = &wallet.policy_contract
+        && !manifest.contracts.contains_key(policy_contract)
+    {
+        errors.push(format!(
+            "smart wallet `{name}` references missing policy contract `{policy_contract}`"
+        ));
+    }
+}
+
+fn validate_tokens(manifest: &Manifest, errors: &mut Vec<String>) {
+    for (name, token) in &manifest.tokens {
+        for field in [&token.issuer, &token.distribution] {
+            validate_token_ref(manifest, name, field, errors);
+        }
+        if token.kind == "contract" && !manifest.contracts.contains_key(name) {
+            errors.push(format!(
+                "token `{name}` is declared as a contract token but no matching contract `{name}` exists in the manifest"
+            ));
+        }
+    }
+}
+
+fn validate_token_ref(manifest: &Manifest, name: &str, field: &str, errors: &mut Vec<String>) {
+    let Some(reference) = parse_manifest_ref(field) else {
+        return;
+    };
+    match reference {
+        ManifestRef::Identity(identity) if !is_safe_name(&identity) => {
+            errors.push(format!(
+                "token `{name}` references unsafe identity `{identity}`"
+            ));
+        }
+        ManifestRef::Wallet(wallet) if !is_safe_name(&wallet) => {
+            errors.push(format!(
+                "token `{name}` references unsafe wallet `{wallet}`"
+            ));
+        }
+        ManifestRef::Identity(identity) if !manifest.identities.contains_key(&identity) => {
+            errors.push(format!(
+                "token `{name}` references missing identity `{identity}`"
+            ));
+        }
+        ManifestRef::Wallet(wallet) if !manifest.wallets.contains_key(&wallet) => {
+            errors.push(format!(
+                "token `{name}` references missing wallet `{wallet}`"
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn validate_scenarios(manifest: &Manifest, errors: &mut Vec<String>) {
+    for (name, scenario) in &manifest.scenarios {
+        if scenario.steps.is_empty() {
+            errors.push(format!("scenario `{name}` must declare at least one step"));
+        }
+        validate_scenario_refs(manifest, name, scenario, errors);
+        for step in &scenario.steps {
+            validate_scenario_step(manifest, name, step, errors);
+        }
+        for assertion in &scenario.assertions {
+            validate_scenario_assertion(name, scenario.steps.len(), assertion, errors);
+        }
+    }
+}
+
+fn validate_scenario_refs(
+    manifest: &Manifest,
+    name: &str,
+    scenario: &ScenarioConfig,
+    errors: &mut Vec<String>,
+) {
+    if let Some(network) = scenario.network.as_deref()
+        && !manifest.networks.contains_key(network)
+    {
+        errors.push(format!(
+            "scenario `{name}` references missing network `{network}`"
+        ));
+    }
+    if let Some(identity) = scenario.identity.as_deref()
+        && !manifest.identities.contains_key(identity)
+    {
+        errors.push(format!(
+            "scenario `{name}` references missing identity `{identity}`"
+        ));
+    }
+}
+
+fn validate_scenario_step(
+    manifest: &Manifest,
+    name: &str,
+    step: &ScenarioStep,
+    errors: &mut Vec<String>,
+) {
+    match step {
+        ScenarioStep::ContractBuild {
+            contract: Some(contract),
+            ..
+        }
+        | ScenarioStep::ContractDeploy { contract, .. }
+        | ScenarioStep::ContractCall { contract, .. }
+            if !manifest.contracts.contains_key(contract) =>
+        {
+            errors.push(format!(
+                "scenario `{name}` references missing contract `{contract}`"
+            ));
+        }
+        _ => {}
+    }
+    if let ScenarioStep::TokenMint { token, .. } = step
+        && !manifest.tokens.contains_key(token)
+    {
+        errors.push(format!(
+            "scenario `{name}` references missing token `{token}`"
+        ));
+    }
+    match step {
+        ScenarioStep::ReleasePlan { env: Some(env) }
+        | ScenarioStep::ReleaseVerify { env: Some(env) }
+        | ScenarioStep::ContractDeploy { env: Some(env), .. }
+            if !manifest.networks.contains_key(env) =>
+        {
+            errors.push(format!(
+                "scenario `{name}` references missing network `{env}`"
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn validate_scenario_assertion(
+    name: &str,
+    step_count: usize,
+    assertion: &ScenarioAssertion,
+    errors: &mut Vec<String>,
+) {
+    match assertion {
+        ScenarioAssertion::Status { status } => {
+            if !matches!(status.as_str(), "ok" | "warn" | "error") {
+                errors.push(format!(
+                    "scenario `{name}` assertion status `{status}` must be one of ok, warn, or error"
+                ));
+            }
+        }
+        ScenarioAssertion::Step {
+            step,
+            status,
+            command_contains,
+            artifact_contains,
+            warning_contains,
+        } => {
+            if *step == 0 || *step > step_count {
+                errors.push(format!(
+                    "scenario `{name}` assertion references missing step `{step}`"
+                ));
+            }
+            if let Some(status) = status
+                && !matches!(status.as_str(), "ok" | "warn" | "error")
+            {
+                errors.push(format!(
+                    "scenario `{name}` step assertion status `{status}` must be one of ok, warn, or error"
+                ));
+            }
+            if status.is_none()
+                && command_contains.is_empty()
+                && artifact_contains.is_empty()
+                && warning_contains.is_empty()
+            {
+                errors.push(format!(
+                    "scenario `{name}` step assertion for step `{step}` must declare at least one expectation"
+                ));
+            }
+        }
+    }
+}
+
+fn validate_contract_paths(manifest: &Manifest, root: &Path, errors: &mut Vec<String>) {
+    for (name, contract) in &manifest.contracts {
+        if contract.path.trim().is_empty() {
+            errors.push(format!("contract `{name}` is missing path"));
+        } else if !is_safe_relative_path(Path::new(&contract.path)) {
+            errors.push(format!(
+                "contract `{name}` path `{}` must stay inside the project root",
+                contract.path
+            ));
+        } else if !root.join(&contract.path).exists() {
+            errors.push(format!(
+                "contract `{name}` points to missing path `{}`",
+                contract.path
+            ));
         }
     }
 }

@@ -296,54 +296,51 @@ fn render_human(report: &CommandReport) -> String {
     if let Some(network) = &report.network {
         lines.push(format!("network: {network}"));
     }
-    if !report.checks.is_empty() {
-        lines.push(String::new());
-        lines.push("checks:".to_string());
-        for check in &report.checks {
-            let mut line = format!("- {}: {}", check.status, check.name);
-            if let Some(detail) = &check.detail {
-                line.push_str(&format!(" ({detail})"));
-            }
-            lines.push(line);
-        }
-    }
-    if !report.warnings.is_empty() {
-        lines.push(String::new());
-        lines.push("warnings:".to_string());
-        for warning in &report.warnings {
-            lines.push(format!("- {warning}"));
-        }
-    }
-    if !report.commands.is_empty() {
-        lines.push(String::new());
-        lines.push("commands:".to_string());
-        for command in &report.commands {
-            lines.push(format!("- {command}"));
-        }
-    }
-    if !report.artifacts.is_empty() {
-        lines.push(String::new());
-        lines.push("artifacts:".to_string());
-        for artifact in &report.artifacts {
-            lines.push(format!("- {artifact}"));
-        }
-    }
-    if !report.next.is_empty() {
-        lines.push(String::new());
-        lines.push("next:".to_string());
-        for next in &report.next {
-            lines.push(format!("- {next}"));
-        }
-    }
-    if let Some(data) = &report.data {
-        lines.push(String::new());
-        lines.push("data:".to_string());
-        match serde_json::to_string_pretty(data) {
-            Ok(rendered) => lines.push(rendered),
-            Err(error) => lines.push(format!("<failed to serialize data: {error}>")),
-        }
-    }
+    render_checks(&mut lines, &report.checks);
+    render_list_section(&mut lines, "warnings", &report.warnings);
+    render_list_section(&mut lines, "commands", &report.commands);
+    render_list_section(&mut lines, "artifacts", &report.artifacts);
+    render_list_section(&mut lines, "next", &report.next);
+    render_data(&mut lines, report.data.as_ref());
     lines.join("\n")
+}
+
+fn render_checks(lines: &mut Vec<String>, checks: &[CheckResult]) {
+    if checks.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push("checks:".to_string());
+    for check in checks {
+        let mut line = format!("- {}: {}", check.status, check.name);
+        if let Some(detail) = &check.detail {
+            line.push_str(&format!(" ({detail})"));
+        }
+        lines.push(line);
+    }
+}
+
+fn render_list_section(lines: &mut Vec<String>, title: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push(format!("{title}:"));
+    for item in items {
+        lines.push(format!("- {item}"));
+    }
+}
+
+fn render_data(lines: &mut Vec<String>, data: Option<&Value>) {
+    let Some(data) = data else {
+        return;
+    };
+    lines.push(String::new());
+    lines.push("data:".to_string());
+    match serde_json::to_string_pretty(data) {
+        Ok(rendered) => lines.push(rendered),
+        Err(error) => lines.push(format!("<failed to serialize data: {error}>")),
+    }
 }
 
 pub(crate) fn write_text_atomic(path: &Path, contents: &str) -> Result<()> {

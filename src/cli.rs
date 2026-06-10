@@ -1281,188 +1281,228 @@ impl Command {
     pub fn action_hint(&self) -> &'static str {
         match self {
             Command::Init(_) => "init",
-            Command::Project(args) => match &args.command {
-                ProjectCommand::Info(_) => "project.info",
-                ProjectCommand::Sync(_) => "project.sync",
-                ProjectCommand::Validate(_) => "project.validate",
-                ProjectCommand::Smoke(_) => "project.smoke",
-                ProjectCommand::Add(args) => match &args.target {
-                    ProjectAddTarget::Contract { .. } => "project.add.contract",
-                    ProjectAddTarget::Api { .. } => "project.add.api",
-                    ProjectAddTarget::Frontend { .. } => "project.add.frontend",
-                },
-                ProjectCommand::Adopt(args) => match &args.source {
-                    ProjectAdoptSource::Scaffold(_) => "project.adopt.scaffold",
-                },
-            },
-            Command::Dev(args) => match &args.command {
-                DevCommand::Up(_) => "dev.up",
-                DevCommand::Down(_) => "dev.down",
-                DevCommand::Status(_) => "dev.status",
-                DevCommand::Reset(_) => "dev.reset",
-                DevCommand::Reseed(_) => "dev.reseed",
-                DevCommand::Snapshot(args) => match &args.command {
-                    DevSnapshotCommand::Save(_) => "dev.snapshot.save",
-                    DevSnapshotCommand::Load(_) => "dev.snapshot.load",
-                },
-                DevCommand::Fund(_) => "dev.fund",
-                DevCommand::Watch(_) => "dev.watch",
-                DevCommand::Events(_) => "dev.events",
-                DevCommand::Logs(_) => "dev.logs",
-            },
-            Command::Scenario(args) => match &args.command {
-                ScenarioCommand::Run(_) => "scenario.run",
-                ScenarioCommand::Test(_) => "scenario.test",
-            },
-            Command::Contract(args) => match &args.command {
-                ContractCommand::New { .. } => "contract.new",
-                ContractCommand::Build { .. } => "contract.build",
-                ContractCommand::Format(_) => "contract.format",
-                ContractCommand::Lint(_) => "contract.lint",
-                ContractCommand::Deploy { .. } => "contract.deploy",
-                ContractCommand::Call(_) => "contract.call",
-                ContractCommand::Bind { .. } => "contract.bind",
-                ContractCommand::Info { .. } => "contract.info",
-                ContractCommand::Fetch { .. } => "contract.fetch",
-                ContractCommand::Ttl(args) => match &args.command {
-                    ContractTtlCommand::Extend(_) => "contract.ttl.extend",
-                    ContractTtlCommand::Restore(_) => "contract.ttl.restore",
-                },
-                ContractCommand::Spec(_) => "contract.spec",
-            },
-            Command::Token(args) => match &args.command {
-                TokenCommand::Create(_) => "token.create",
-                TokenCommand::Info { .. } => "token.info",
-                TokenCommand::Airdrop(_) => "token.airdrop",
-                TokenCommand::AirdropReconcile(_) => "token.airdrop-reconcile",
-                TokenCommand::AirdropResume(_) => "token.airdrop-resume",
-                TokenCommand::AirdropReport(_) => "token.airdrop-report",
-                TokenCommand::AirdropValidate(_) => "token.airdrop-validate",
-                TokenCommand::AirdropPreview(_) => "token.airdrop-preview",
-                TokenCommand::AirdropSummary(_) => "token.airdrop-summary",
-                TokenCommand::Mint(_) => "token.mint",
-                TokenCommand::Burn(_) => "token.burn",
-                TokenCommand::Transfer(_) => "token.transfer",
-                TokenCommand::Trust { .. } => "token.trust",
-                TokenCommand::Freeze { .. } => "token.freeze",
-                TokenCommand::Unfreeze { .. } => "token.unfreeze",
-                TokenCommand::Clawback { .. } => "token.clawback",
-                TokenCommand::Sac(args) => match &args.command {
-                    TokenSacCommand::Id { .. } => "token.sac.id",
-                    TokenSacCommand::Deploy { .. } => "token.sac.deploy",
-                },
-                TokenCommand::Contract(args) => match &args.command {
-                    TokenContractCommand::Init { .. } => "token.contract.init",
-                },
-                TokenCommand::Balance(_) => "token.balance",
-            },
-            Command::Wallet(args) => match &args.command {
-                WalletCommand::Create { .. } => "wallet.create",
-                WalletCommand::Ls(_) => "wallet.ls",
-                WalletCommand::Address(_) => "wallet.address",
-                WalletCommand::Fund { .. } => "wallet.fund",
-                WalletCommand::Balances(_) => "wallet.balances",
-                WalletCommand::Trust { .. } => "wallet.trust",
-                WalletCommand::Pay(_) => "wallet.pay",
-                WalletCommand::BatchPay(_) => "wallet.batch-pay",
-                WalletCommand::BatchReconcile(_) => "wallet.batch-reconcile",
-                WalletCommand::BatchResume(_) => "wallet.batch-resume",
-                WalletCommand::BatchReport(_) => "wallet.batch-report",
-                WalletCommand::BatchValidate(_) => "wallet.batch-validate",
-                WalletCommand::BatchPreview(_) => "wallet.batch-preview",
-                WalletCommand::BatchSummary(_) => "wallet.batch-summary",
-                WalletCommand::Receive(_) => "wallet.receive",
-                WalletCommand::Sep7(args) => match &args.command {
-                    WalletSep7Command::Payment(_) => "wallet.sep7.payment",
-                    WalletSep7Command::ContractCall(_) => "wallet.sep7.contract-call",
-                },
-                WalletCommand::Smart(args) => match &args.command {
-                    WalletSmartCommand::Create { .. } => "wallet.smart.create",
-                    WalletSmartCommand::Scaffold { .. } => "wallet.smart.scaffold",
-                    WalletSmartCommand::Info { .. } => "wallet.smart.info",
-                    WalletSmartCommand::Onboard(_) => "wallet.smart.onboard",
-                    WalletSmartCommand::Provision { .. } => "wallet.smart.provision",
-                    WalletSmartCommand::Materialize { .. } => "wallet.smart.materialize",
-                    WalletSmartCommand::Controller(args) => match &args.command {
-                        WalletSmartControllerCommand::Rotate { .. } => {
-                            "wallet.smart.controller.rotate"
-                        }
-                    },
-                    WalletSmartCommand::Policy(args) => match &args.command {
-                        WalletSmartPolicyCommand::Info(_) => "wallet.smart.policy.info",
-                        WalletSmartPolicyCommand::Diff(_) => "wallet.smart.policy.diff",
-                        WalletSmartPolicyCommand::Sync(_) => "wallet.smart.policy.sync",
-                        WalletSmartPolicyCommand::Simulate { .. } => "wallet.smart.policy.simulate",
-                        WalletSmartPolicyCommand::Apply { .. } => "wallet.smart.policy.apply",
-                        WalletSmartPolicyCommand::SetDailyLimit { .. } => {
-                            "wallet.smart.policy.set-daily-limit"
-                        }
-                        WalletSmartPolicyCommand::Allow { .. } => "wallet.smart.policy.allow",
-                        WalletSmartPolicyCommand::Revoke { .. } => "wallet.smart.policy.revoke",
-                    },
-                },
-            },
-            Command::Api(args) => match &args.command {
-                ApiCommand::Init(_) => "api.init",
-                ApiCommand::Generate(args) => match &args.target {
-                    ApiGenerateTarget::Contract { .. } => "api.generate.contract",
-                    ApiGenerateTarget::Token { .. } => "api.generate.token",
-                },
-                ApiCommand::Openapi(args) => match &args.command {
-                    ApiOpenapiCommand::Export(_) => "api.openapi.export",
-                },
-                ApiCommand::Events(args) => match &args.command {
-                    ApiEventsCommand::Init(_) => "api.events.init",
-                },
-                ApiCommand::Relayer(args) => match &args.command {
-                    ApiRelayerCommand::Init(_) => "api.relayer.init",
-                },
-            },
-            Command::Events(args) => match &args.command {
-                EventsCommand::Status(_) => "events.status",
-                EventsCommand::Export(_) => "events.export",
-                EventsCommand::Replay(_) => "events.replay",
-                EventsCommand::Watch(_) => "events.watch",
-                EventsCommand::Ingest(args) => match &args.command {
-                    EventsIngestCommand::Init(_) => "events.ingest.init",
-                },
-                EventsCommand::Cursor(args) => match &args.command {
-                    EventsCursorCommand::Ls(_) => "events.cursor.ls",
-                    EventsCursorCommand::Reset { .. } => "events.cursor.reset",
-                },
-                EventsCommand::Backfill(_) => "events.backfill",
-            },
-            Command::Release(args) => match &args.command {
-                ReleaseCommand::Plan { .. } => "release.plan",
-                ReleaseCommand::Deploy { .. } => "release.deploy",
-                ReleaseCommand::Verify { .. } => "release.verify",
-                ReleaseCommand::Status { .. } => "release.status",
-                ReleaseCommand::Drift { .. } => "release.drift",
-                ReleaseCommand::Diff { .. } => "release.diff",
-                ReleaseCommand::History { .. } => "release.history",
-                ReleaseCommand::Inspect { .. } => "release.inspect",
-                ReleaseCommand::Rollback { .. } => "release.rollback",
-                ReleaseCommand::Prune(_) => "release.prune",
-                ReleaseCommand::Aliases(args) => match &args.command {
-                    ReleaseAliasesCommand::Sync { .. } => "release.aliases.sync",
-                },
-                ReleaseCommand::Env(args) => match &args.command {
-                    ReleaseEnvCommand::Export { .. } => "release.env.export",
-                },
-                ReleaseCommand::Registry(args) => match &args.command {
-                    ReleaseRegistryCommand::Publish { .. } => "release.registry.publish",
-                    ReleaseRegistryCommand::Deploy { .. } => "release.registry.deploy",
-                },
-            },
-            Command::Doctor(args) => match &args.command {
-                None => "doctor",
-                Some(DoctorCommand::Env(_)) => "doctor.env",
-                Some(DoctorCommand::Deps(_)) => "doctor.deps",
-                Some(DoctorCommand::Audit(_)) => "doctor.audit",
-                Some(DoctorCommand::Fix(_)) => "doctor.fix",
-                Some(DoctorCommand::Network(_)) => "doctor.network",
-                Some(DoctorCommand::Project(_)) => "doctor.project",
-            },
+            Command::Project(args) => project_action_hint(&args.command),
+            Command::Dev(args) => dev_action_hint(&args.command),
+            Command::Scenario(args) => scenario_action_hint(&args.command),
+            Command::Contract(args) => contract_action_hint(&args.command),
+            Command::Token(args) => token_action_hint(&args.command),
+            Command::Wallet(args) => wallet_action_hint(&args.command),
+            Command::Api(args) => api_action_hint(&args.command),
+            Command::Events(args) => events_action_hint(&args.command),
+            Command::Release(args) => release_action_hint(&args.command),
+            Command::Doctor(args) => doctor_action_hint(args.command.as_ref()),
         }
+    }
+}
+
+fn project_action_hint(command: &ProjectCommand) -> &'static str {
+    match command {
+        ProjectCommand::Info(_) => "project.info",
+        ProjectCommand::Sync(_) => "project.sync",
+        ProjectCommand::Validate(_) => "project.validate",
+        ProjectCommand::Smoke(_) => "project.smoke",
+        ProjectCommand::Add(args) => match &args.target {
+            ProjectAddTarget::Contract { .. } => "project.add.contract",
+            ProjectAddTarget::Api { .. } => "project.add.api",
+            ProjectAddTarget::Frontend { .. } => "project.add.frontend",
+        },
+        ProjectCommand::Adopt(args) => match &args.source {
+            ProjectAdoptSource::Scaffold(_) => "project.adopt.scaffold",
+        },
+    }
+}
+
+fn dev_action_hint(command: &DevCommand) -> &'static str {
+    match command {
+        DevCommand::Up(_) => "dev.up",
+        DevCommand::Down(_) => "dev.down",
+        DevCommand::Status(_) => "dev.status",
+        DevCommand::Reset(_) => "dev.reset",
+        DevCommand::Reseed(_) => "dev.reseed",
+        DevCommand::Snapshot(args) => match &args.command {
+            DevSnapshotCommand::Save(_) => "dev.snapshot.save",
+            DevSnapshotCommand::Load(_) => "dev.snapshot.load",
+        },
+        DevCommand::Fund(_) => "dev.fund",
+        DevCommand::Watch(_) => "dev.watch",
+        DevCommand::Events(_) => "dev.events",
+        DevCommand::Logs(_) => "dev.logs",
+    }
+}
+
+fn scenario_action_hint(command: &ScenarioCommand) -> &'static str {
+    match command {
+        ScenarioCommand::Run(_) => "scenario.run",
+        ScenarioCommand::Test(_) => "scenario.test",
+    }
+}
+
+fn contract_action_hint(command: &ContractCommand) -> &'static str {
+    match command {
+        ContractCommand::New { .. } => "contract.new",
+        ContractCommand::Build { .. } => "contract.build",
+        ContractCommand::Format(_) => "contract.format",
+        ContractCommand::Lint(_) => "contract.lint",
+        ContractCommand::Deploy { .. } => "contract.deploy",
+        ContractCommand::Call(_) => "contract.call",
+        ContractCommand::Bind { .. } => "contract.bind",
+        ContractCommand::Info { .. } => "contract.info",
+        ContractCommand::Fetch { .. } => "contract.fetch",
+        ContractCommand::Ttl(args) => match &args.command {
+            ContractTtlCommand::Extend(_) => "contract.ttl.extend",
+            ContractTtlCommand::Restore(_) => "contract.ttl.restore",
+        },
+        ContractCommand::Spec(_) => "contract.spec",
+    }
+}
+
+fn token_action_hint(command: &TokenCommand) -> &'static str {
+    match command {
+        TokenCommand::Create(_) => "token.create",
+        TokenCommand::Info { .. } => "token.info",
+        TokenCommand::Airdrop(_) => "token.airdrop",
+        TokenCommand::AirdropReconcile(_) => "token.airdrop-reconcile",
+        TokenCommand::AirdropResume(_) => "token.airdrop-resume",
+        TokenCommand::AirdropReport(_) => "token.airdrop-report",
+        TokenCommand::AirdropValidate(_) => "token.airdrop-validate",
+        TokenCommand::AirdropPreview(_) => "token.airdrop-preview",
+        TokenCommand::AirdropSummary(_) => "token.airdrop-summary",
+        TokenCommand::Mint(_) => "token.mint",
+        TokenCommand::Burn(_) => "token.burn",
+        TokenCommand::Transfer(_) => "token.transfer",
+        TokenCommand::Trust { .. } => "token.trust",
+        TokenCommand::Freeze { .. } => "token.freeze",
+        TokenCommand::Unfreeze { .. } => "token.unfreeze",
+        TokenCommand::Clawback { .. } => "token.clawback",
+        TokenCommand::Sac(args) => match &args.command {
+            TokenSacCommand::Id { .. } => "token.sac.id",
+            TokenSacCommand::Deploy { .. } => "token.sac.deploy",
+        },
+        TokenCommand::Contract(args) => match &args.command {
+            TokenContractCommand::Init { .. } => "token.contract.init",
+        },
+        TokenCommand::Balance(_) => "token.balance",
+    }
+}
+
+fn wallet_action_hint(command: &WalletCommand) -> &'static str {
+    match command {
+        WalletCommand::Create { .. } => "wallet.create",
+        WalletCommand::Ls(_) => "wallet.ls",
+        WalletCommand::Address(_) => "wallet.address",
+        WalletCommand::Fund { .. } => "wallet.fund",
+        WalletCommand::Balances(_) => "wallet.balances",
+        WalletCommand::Trust { .. } => "wallet.trust",
+        WalletCommand::Pay(_) => "wallet.pay",
+        WalletCommand::BatchPay(_) => "wallet.batch-pay",
+        WalletCommand::BatchReconcile(_) => "wallet.batch-reconcile",
+        WalletCommand::BatchResume(_) => "wallet.batch-resume",
+        WalletCommand::BatchReport(_) => "wallet.batch-report",
+        WalletCommand::BatchValidate(_) => "wallet.batch-validate",
+        WalletCommand::BatchPreview(_) => "wallet.batch-preview",
+        WalletCommand::BatchSummary(_) => "wallet.batch-summary",
+        WalletCommand::Receive(_) => "wallet.receive",
+        WalletCommand::Sep7(args) => match &args.command {
+            WalletSep7Command::Payment(_) => "wallet.sep7.payment",
+            WalletSep7Command::ContractCall(_) => "wallet.sep7.contract-call",
+        },
+        WalletCommand::Smart(args) => wallet_smart_action_hint(&args.command),
+    }
+}
+
+fn wallet_smart_action_hint(command: &WalletSmartCommand) -> &'static str {
+    match command {
+        WalletSmartCommand::Create { .. } => "wallet.smart.create",
+        WalletSmartCommand::Scaffold { .. } => "wallet.smart.scaffold",
+        WalletSmartCommand::Info { .. } => "wallet.smart.info",
+        WalletSmartCommand::Onboard(_) => "wallet.smart.onboard",
+        WalletSmartCommand::Provision { .. } => "wallet.smart.provision",
+        WalletSmartCommand::Materialize { .. } => "wallet.smart.materialize",
+        WalletSmartCommand::Controller(args) => match &args.command {
+            WalletSmartControllerCommand::Rotate { .. } => "wallet.smart.controller.rotate",
+        },
+        WalletSmartCommand::Policy(args) => match &args.command {
+            WalletSmartPolicyCommand::Info(_) => "wallet.smart.policy.info",
+            WalletSmartPolicyCommand::Diff(_) => "wallet.smart.policy.diff",
+            WalletSmartPolicyCommand::Sync(_) => "wallet.smart.policy.sync",
+            WalletSmartPolicyCommand::Simulate { .. } => "wallet.smart.policy.simulate",
+            WalletSmartPolicyCommand::Apply { .. } => "wallet.smart.policy.apply",
+            WalletSmartPolicyCommand::SetDailyLimit { .. } => "wallet.smart.policy.set-daily-limit",
+            WalletSmartPolicyCommand::Allow { .. } => "wallet.smart.policy.allow",
+            WalletSmartPolicyCommand::Revoke { .. } => "wallet.smart.policy.revoke",
+        },
+    }
+}
+
+fn api_action_hint(command: &ApiCommand) -> &'static str {
+    match command {
+        ApiCommand::Init(_) => "api.init",
+        ApiCommand::Generate(args) => match &args.target {
+            ApiGenerateTarget::Contract { .. } => "api.generate.contract",
+            ApiGenerateTarget::Token { .. } => "api.generate.token",
+        },
+        ApiCommand::Openapi(args) => match &args.command {
+            ApiOpenapiCommand::Export(_) => "api.openapi.export",
+        },
+        ApiCommand::Events(args) => match &args.command {
+            ApiEventsCommand::Init(_) => "api.events.init",
+        },
+        ApiCommand::Relayer(args) => match &args.command {
+            ApiRelayerCommand::Init(_) => "api.relayer.init",
+        },
+    }
+}
+
+fn events_action_hint(command: &EventsCommand) -> &'static str {
+    match command {
+        EventsCommand::Status(_) => "events.status",
+        EventsCommand::Export(_) => "events.export",
+        EventsCommand::Replay(_) => "events.replay",
+        EventsCommand::Watch(_) => "events.watch",
+        EventsCommand::Ingest(args) => match &args.command {
+            EventsIngestCommand::Init(_) => "events.ingest.init",
+        },
+        EventsCommand::Cursor(args) => match &args.command {
+            EventsCursorCommand::Ls(_) => "events.cursor.ls",
+            EventsCursorCommand::Reset { .. } => "events.cursor.reset",
+        },
+        EventsCommand::Backfill(_) => "events.backfill",
+    }
+}
+
+fn release_action_hint(command: &ReleaseCommand) -> &'static str {
+    match command {
+        ReleaseCommand::Plan { .. } => "release.plan",
+        ReleaseCommand::Deploy { .. } => "release.deploy",
+        ReleaseCommand::Verify { .. } => "release.verify",
+        ReleaseCommand::Status { .. } => "release.status",
+        ReleaseCommand::Drift { .. } => "release.drift",
+        ReleaseCommand::Diff { .. } => "release.diff",
+        ReleaseCommand::History { .. } => "release.history",
+        ReleaseCommand::Inspect { .. } => "release.inspect",
+        ReleaseCommand::Rollback { .. } => "release.rollback",
+        ReleaseCommand::Prune(_) => "release.prune",
+        ReleaseCommand::Aliases(args) => match &args.command {
+            ReleaseAliasesCommand::Sync { .. } => "release.aliases.sync",
+        },
+        ReleaseCommand::Env(args) => match &args.command {
+            ReleaseEnvCommand::Export { .. } => "release.env.export",
+        },
+        ReleaseCommand::Registry(args) => match &args.command {
+            ReleaseRegistryCommand::Publish { .. } => "release.registry.publish",
+            ReleaseRegistryCommand::Deploy { .. } => "release.registry.deploy",
+        },
+    }
+}
+
+fn doctor_action_hint(command: Option<&DoctorCommand>) -> &'static str {
+    match command {
+        None => "doctor",
+        Some(DoctorCommand::Env(_)) => "doctor.env",
+        Some(DoctorCommand::Deps(_)) => "doctor.deps",
+        Some(DoctorCommand::Audit(_)) => "doctor.audit",
+        Some(DoctorCommand::Fix(_)) => "doctor.fix",
+        Some(DoctorCommand::Network(_)) => "doctor.network",
+        Some(DoctorCommand::Project(_)) => "doctor.project",
     }
 }

@@ -111,22 +111,42 @@ fn scaffold_compatibility_checks(
         Some(traces.join(", ")),
     )];
 
-    if !bindings.is_empty() || root.join("packages").is_dir() {
-        let issues = scaffold_binding_issues(manifest, &bindings);
-        checks.push(check(
-            "compat:scaffold:packages",
-            if issues.is_empty() { "ok" } else { "warn" },
-            Some(if issues.is_empty() {
-                format!(
-                    "{} binding package(s) detected",
-                    bindings.values().map(Vec::len).sum::<usize>()
-                )
-            } else {
-                issues.join("; ")
-            }),
-        ));
-    }
+    append_scaffold_package_check(&mut checks, root, manifest, &bindings);
+    append_scaffold_frontend_check(&mut checks, root_frontend);
+    append_scaffold_target_check(&mut checks, root);
+    append_scaffold_environment_checks(&mut checks, root, manifest, lockfile, &environments);
 
+    Ok(checks)
+}
+
+fn append_scaffold_package_check(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    root: &Path,
+    manifest: &Manifest,
+    bindings: &BTreeMap<String, Vec<String>>,
+) {
+    if bindings.is_empty() && !root.join("packages").is_dir() {
+        return;
+    }
+    let issues = scaffold_binding_issues(manifest, bindings);
+    checks.push(check(
+        "compat:scaffold:packages",
+        if issues.is_empty() { "ok" } else { "warn" },
+        Some(if issues.is_empty() {
+            format!(
+                "{} binding package(s) detected",
+                bindings.values().map(Vec::len).sum::<usize>()
+            )
+        } else {
+            issues.join("; ")
+        }),
+    ));
+}
+
+fn append_scaffold_frontend_check(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    root_frontend: bool,
+) {
     if root_frontend {
         checks.push(check(
             "compat:scaffold:frontend-root",
@@ -134,54 +154,64 @@ fn scaffold_compatibility_checks(
             Some("root frontend detected and preserved outside managed `apps/web`".to_string()),
         ));
     }
+}
 
-    if root.join("target/stellar").is_dir() {
+fn append_scaffold_target_check(checks: &mut Vec<crate::runtime::CheckResult>, root: &Path) {
+    let target_stellar = root.join("target/stellar");
+    if target_stellar.is_dir() {
         checks.push(check(
             "compat:scaffold:target-stellar",
             "ok",
-            Some(root.join("target/stellar").display().to_string()),
+            Some(target_stellar.display().to_string()),
         ));
     }
+}
 
-    if root.join("environments.toml").exists() {
-        let environment_issues = scaffold_environment_issues(manifest, &environments);
-        checks.push(check(
-            "compat:scaffold:environments",
-            if environment_issues.is_empty() {
-                "ok"
-            } else {
-                "warn"
-            },
-            Some(if environment_issues.is_empty() {
-                environments.environments.join(", ")
-            } else {
-                environment_issues.join("; ")
-            }),
-        ));
-        let deployment_issues = scaffold_deployment_issues(lockfile, &environments);
-        checks.push(check(
-            "compat:scaffold:deployments",
-            if deployment_issues.is_empty() {
-                "ok"
-            } else {
-                "warn"
-            },
-            Some(if deployment_issues.is_empty() {
-                format!(
-                    "{} imported deployment(s)",
-                    environments
-                        .deployment_counts
-                        .values()
-                        .copied()
-                        .sum::<usize>()
-                )
-            } else {
-                deployment_issues.join("; ")
-            }),
-        ));
+fn append_scaffold_environment_checks(
+    checks: &mut Vec<crate::runtime::CheckResult>,
+    root: &Path,
+    manifest: &Manifest,
+    lockfile: &Lockfile,
+    environments: &ScaffoldEnvironmentImport,
+) {
+    if !root.join("environments.toml").exists() {
+        return;
     }
-
-    Ok(checks)
+    let environment_issues = scaffold_environment_issues(manifest, environments);
+    checks.push(check(
+        "compat:scaffold:environments",
+        if environment_issues.is_empty() {
+            "ok"
+        } else {
+            "warn"
+        },
+        Some(if environment_issues.is_empty() {
+            environments.environments.join(", ")
+        } else {
+            environment_issues.join("; ")
+        }),
+    ));
+    let deployment_issues = scaffold_deployment_issues(lockfile, environments);
+    checks.push(check(
+        "compat:scaffold:deployments",
+        if deployment_issues.is_empty() {
+            "ok"
+        } else {
+            "warn"
+        },
+        Some(if deployment_issues.is_empty() {
+            format!(
+                "{} imported deployment(s)",
+                environments
+                    .deployment_counts
+                    .values()
+                    .copied()
+                    .sum::<usize>()
+            )
+        } else {
+            deployment_issues.join("; ")
+        }),
+    ));
 }
 
 fn scaffold_binding_issues(
@@ -404,6 +434,25 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
     } else {
         None
     };
+    append_dependency_checks(
+        context,
+        &mut report,
+        doctor_dependency_requirements(manifest.as_ref()),
+    );
+    append_registry_tooling_check(context, &mut report);
+    append_stellar_plugin_check(context, &mut report)?;
+    report.status = aggregate_status(&report.checks);
+    report.message = Some("dependency checks completed".to_string());
+    Ok(report)
+}
+
+struct DoctorDependencyRequirement {
+    name: &'static str,
+    required: bool,
+    detail: &'static str,
+}
+
+fn doctor_dependency_requirements(manifest: Option<&Manifest>) -> Vec<DoctorDependencyRequirement> {
     let requires_node = manifest.as_ref().is_some_and(|manifest| {
         manifest.api.as_ref().is_some_and(|api| api.enabled)
             || manifest
@@ -428,79 +477,92 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
                 .as_ref()
                 .is_none_or(|api| api.database == "sqlite")
     });
-    for (dependency, required, detail) in [
-        (
-            "stellar",
-            true,
-            "required for contract, wallet, and release orchestration",
-        ),
-        (
-            "docker",
-            requires_docker,
-            if requires_docker {
+    vec![
+        DoctorDependencyRequirement {
+            name: "stellar",
+            required: true,
+            detail: "required for contract, wallet, and release orchestration",
+        },
+        DoctorDependencyRequirement {
+            name: "docker",
+            required: requires_docker,
+            detail: if requires_docker {
                 "required for local network workflows"
             } else {
                 "optional until you use a local network workflow"
             },
-        ),
-        (
-            "cargo",
-            requires_rust,
-            if requires_rust {
+        },
+        DoctorDependencyRequirement {
+            name: "cargo",
+            required: requires_rust,
+            detail: if requires_rust {
                 "required because the project declares Rust contracts"
             } else {
                 "optional until you add Rust contracts"
             },
-        ),
-        (
-            "rustc",
-            requires_rust,
-            if requires_rust {
+        },
+        DoctorDependencyRequirement {
+            name: "rustc",
+            required: requires_rust,
+            detail: if requires_rust {
                 "required because the project declares Rust contracts"
             } else {
                 "optional until you add Rust contracts"
             },
-        ),
-        (
-            "node",
-            requires_node,
-            if requires_node {
+        },
+        DoctorDependencyRequirement {
+            name: "node",
+            required: requires_node,
+            detail: if requires_node {
                 "required by API/frontend scaffolds"
             } else {
                 "optional until you enable API or frontend scaffolds"
             },
-        ),
-        (
-            "pnpm",
-            requires_node,
-            if requires_node {
+        },
+        DoctorDependencyRequirement {
+            name: "pnpm",
+            required: requires_node,
+            detail: if requires_node {
                 "required by API/frontend scaffolds"
             } else {
                 "optional until you enable API or frontend scaffolds"
             },
-        ),
-        (
-            "sqlite3",
-            requires_sqlite,
-            if requires_sqlite {
+        },
+        DoctorDependencyRequirement {
+            name: "sqlite3",
+            required: requires_sqlite,
+            detail: if requires_sqlite {
                 "required for persisted event backfills and cursor maintenance"
             } else {
                 "optional until you persist event data with sqlite"
             },
-        ),
-    ] {
-        let available = context.command_exists(dependency);
+        },
+    ]
+}
+
+fn append_dependency_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    requirements: Vec<DoctorDependencyRequirement>,
+) {
+    for requirement in requirements {
+        let available = context.command_exists(requirement.name);
         let status = if available {
             "ok"
-        } else if required {
+        } else if requirement.required {
             "error"
         } else {
             "warn"
         };
-        report
-            .checks
-            .push(check(dependency, status, Some(detail.to_string())));
+        report.checks.push(check(
+            requirement.name,
+            status,
+            Some(requirement.detail.to_string()),
+        ));
     }
+}
+
+fn append_registry_tooling_check(context: &AppContext, report: &mut CommandReport) {
     let registry_cli = resolve_registry_cli(context);
     let registry_artifacts_present = project_has_registry_artifacts(&context.project_root());
     let registry_detail = if registry_artifacts_present {
@@ -519,6 +581,9 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
         if registry_cli.available { "ok" } else { "warn" },
         Some(registry_detail),
     ));
+}
+
+fn append_stellar_plugin_check(context: &AppContext, report: &mut CommandReport) -> Result<()> {
     if context.command_exists("stellar") {
         if context.globals.dry_run {
             report.commands.push("stellar plugin ls".to_string());
@@ -529,7 +594,7 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
             ));
         } else {
             let output = context.run_command(
-                &mut report,
+                report,
                 None,
                 "stellar",
                 &["plugin".to_string(), "ls".to_string()],
@@ -550,9 +615,7 @@ fn doctor_deps(context: &AppContext) -> Result<CommandReport> {
             ));
         }
     }
-    report.status = aggregate_status(&report.checks);
-    report.message = Some("dependency checks completed".to_string());
-    Ok(report)
+    Ok(())
 }
 
 fn stellar_plugin_list_includes_forge(output: &str) -> bool {
@@ -790,78 +853,126 @@ pub(super) fn doctor_network(
     let (name, network) =
         manifest.active_network(env_name.or(context.globals.network.as_deref()))?;
     report.network = Some(name.to_string());
-    if let Ok(rpc_url) = Url::parse(&network.rpc_url) {
-        report.commands.push(format!("POST {rpc_url}"));
-        if context.globals.dry_run {
-            report.checks.push(check(
-                "rpc",
-                "warn",
-                Some(format!("skipped in --dry-run: {}", network.rpc_url)),
-            ));
-        } else {
-            let response = context.post_json(
-                &rpc_url,
-                &json!({"jsonrpc":"2.0","id":"health","method":"getHealth"}),
-            );
-            match response {
-                Ok(_) => report
-                    .checks
-                    .push(check("rpc", "ok", Some(network.rpc_url.clone()))),
-                Err(error) => report
-                    .checks
-                    .push(check("rpc", "warn", Some(error.to_string()))),
-            }
-        }
-        if network.kind == "local" {
-            report.checks.push(check(
-                "rpc-host",
-                if rpc_url.host_str().is_some_and(is_loopback_host) {
-                    "ok"
-                } else {
-                    "warn"
-                },
-                Some(rpc_url.host_str().unwrap_or("<missing-host>").to_string()),
-            ));
-        }
-    }
-    if let Ok(horizon_url) = Url::parse(&network.horizon_url) {
-        report.commands.push(format!("GET {horizon_url}"));
-        if context.globals.dry_run {
-            report.checks.push(check(
-                "horizon",
-                "warn",
-                Some(format!("skipped in --dry-run: {}", network.horizon_url)),
-            ));
-        } else {
-            let response = context.get_json(&horizon_url);
-            match response {
-                Ok(_) => {
-                    report
+    append_rpc_network_checks(context, &mut report, network);
+    append_horizon_network_checks(context, &mut report, network);
+    append_deployed_resource_network_checks(context, &mut report, &manifest, name, network)?;
+    report.status = aggregate_status(&report.checks);
+    report.message = Some("network endpoints probed".to_string());
+    Ok(report)
+}
+
+fn append_rpc_network_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    network: &NetworkConfig,
+) {
+    match Url::parse(&network.rpc_url) {
+        Ok(rpc_url) => {
+            report.commands.push(format!("POST {rpc_url}"));
+            if context.globals.dry_run {
+                report.checks.push(check(
+                    "rpc",
+                    "warn",
+                    Some(format!("skipped in --dry-run: {}", network.rpc_url)),
+                ));
+            } else {
+                let response = context.post_json(
+                    &rpc_url,
+                    &json!({"jsonrpc":"2.0","id":"health","method":"getHealth"}),
+                );
+                match response {
+                    Ok(_) => report
                         .checks
-                        .push(check("horizon", "ok", Some(network.horizon_url.clone())))
+                        .push(check("rpc", "ok", Some(network.rpc_url.clone()))),
+                    Err(error) => report
+                        .checks
+                        .push(check("rpc", "warn", Some(error.to_string()))),
                 }
-                Err(error) => report
-                    .checks
-                    .push(check("horizon", "warn", Some(error.to_string()))),
+            }
+            if network.kind == "local" {
+                report.checks.push(check(
+                    "rpc-host",
+                    if rpc_url.host_str().is_some_and(is_loopback_host) {
+                        "ok"
+                    } else {
+                        "warn"
+                    },
+                    Some(rpc_url.host_str().unwrap_or("<missing-host>").to_string()),
+                ));
             }
         }
-        if network.kind == "local" {
-            report.checks.push(check(
-                "horizon-host",
-                if horizon_url.host_str().is_some_and(is_loopback_host) {
-                    "ok"
-                } else {
-                    "warn"
-                },
-                Some(
-                    horizon_url
-                        .host_str()
-                        .unwrap_or("<missing-host>")
-                        .to_string(),
-                ),
-            ));
-        }
+        Err(error) => report.checks.push(check(
+            "rpc",
+            "warn",
+            Some(format!("invalid rpc_url `{}`: {error}", network.rpc_url)),
+        )),
     }
+}
+
+fn append_horizon_network_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    network: &NetworkConfig,
+) {
+    match Url::parse(&network.horizon_url) {
+        Ok(horizon_url) => {
+            report.commands.push(format!("GET {horizon_url}"));
+            if context.globals.dry_run {
+                report.checks.push(check(
+                    "horizon",
+                    "warn",
+                    Some(format!("skipped in --dry-run: {}", network.horizon_url)),
+                ));
+            } else {
+                let response = context.get_json(&horizon_url);
+                match response {
+                    Ok(_) => report.checks.push(check(
+                        "horizon",
+                        "ok",
+                        Some(network.horizon_url.clone()),
+                    )),
+                    Err(error) => {
+                        report
+                            .checks
+                            .push(check("horizon", "warn", Some(error.to_string())))
+                    }
+                }
+            }
+            if network.kind == "local" {
+                report.checks.push(check(
+                    "horizon-host",
+                    if horizon_url.host_str().is_some_and(is_loopback_host) {
+                        "ok"
+                    } else {
+                        "warn"
+                    },
+                    Some(
+                        horizon_url
+                            .host_str()
+                            .unwrap_or("<missing-host>")
+                            .to_string(),
+                    ),
+                ));
+            }
+        }
+        Err(error) => report.checks.push(check(
+            "horizon",
+            "warn",
+            Some(format!(
+                "invalid horizon_url `{}`: {error}",
+                network.horizon_url
+            )),
+        )),
+    }
+}
+
+fn append_deployed_resource_network_checks(
+    context: &AppContext,
+    report: &mut CommandReport,
+    manifest: &Manifest,
+    name: &str,
+    network: &NetworkConfig,
+) -> Result<()> {
     let lockfile = load_lockfile(context)?;
     if let Some(environment) = lockfile.environments.get(name) {
         let deployed_resources = environment.contracts.len() + environment.tokens.len();
@@ -877,7 +988,7 @@ pub(super) fn doctor_network(
         }
         if !context.globals.dry_run && context.command_exists("stellar") {
             let probe_checks =
-                probe_release_deployments(context, &mut report, &manifest, name, environment)?;
+                probe_release_deployments(context, report, manifest, name, environment)?;
             report.checks.extend(probe_checks);
         } else if deployed_resources > 0 {
             report.warnings.push(
@@ -885,9 +996,7 @@ pub(super) fn doctor_network(
             );
         }
     }
-    report.status = aggregate_status(&report.checks);
-    report.message = Some("network endpoints probed".to_string());
-    Ok(report)
+    Ok(())
 }
 
 fn append_project_scaffold_checks(report: &mut CommandReport, root: &Path, manifest: &Manifest) {
@@ -1022,104 +1131,131 @@ fn append_contract_token_checks(report: &mut CommandReport, manifest: &Manifest)
         if token.kind != "contract" {
             continue;
         }
-        let Some(contract) = manifest.contracts.get(name) else {
-            report.checks.push(check(
-                format!("token:{name}:contract"),
-                "error",
-                Some(format!(
-                    "token `{name}` is declared as a contract token but no matching contract `{name}` exists in the manifest"
-                )),
-            ));
-            continue;
-        };
+        append_contract_token_check(report, manifest, name);
+    }
+}
 
+fn append_contract_token_check(report: &mut CommandReport, manifest: &Manifest, name: &str) {
+    let Some(contract) = manifest.contracts.get(name) else {
         report.checks.push(check(
             format!("token:{name}:contract"),
-            "ok",
-            Some(contract.path.clone()),
+            "error",
+            Some(format!(
+                "token `{name}` is declared as a contract token but no matching contract `{name}` exists in the manifest"
+            )),
         ));
+        return;
+    };
 
-        let template_status =
-            if contract.template.trim().is_empty() || contract.template == "openzeppelin-token" {
-                "ok"
-            } else {
-                "warn"
-            };
-        let template_detail = if contract.template.trim().is_empty() {
-            "template not declared; contract-token helpers assume the OpenZeppelin token ABI"
-                .to_string()
-        } else if contract.template == "openzeppelin-token" {
-            "openzeppelin-token".to_string()
+    report.checks.push(check(
+        format!("token:{name}:contract"),
+        "ok",
+        Some(contract.path.clone()),
+    ));
+    append_contract_token_template_check(report, name, contract);
+    append_contract_token_init_check(report, manifest, name, contract);
+}
+
+fn append_contract_token_template_check(
+    report: &mut CommandReport,
+    name: &str,
+    contract: &ContractConfig,
+) {
+    let template_status =
+        if contract.template.trim().is_empty() || contract.template == "openzeppelin-token" {
+            "ok"
         } else {
-            format!(
-                "template `{}` may not match the contract-token helper ABI",
-                contract.template
-            )
+            "warn"
         };
-        report.checks.push(check(
-            format!("token:{name}:template"),
-            template_status,
-            Some(template_detail),
-        ));
+    let template_detail = if contract.template.trim().is_empty() {
+        "template not declared; contract-token helpers assume the OpenZeppelin token ABI"
+            .to_string()
+    } else if contract.template == "openzeppelin-token" {
+        "openzeppelin-token".to_string()
+    } else {
+        format!(
+            "template `{}` may not match the contract-token helper ABI",
+            contract.template
+        )
+    };
+    report.checks.push(check(
+        format!("token:{name}:template"),
+        template_status,
+        Some(template_detail),
+    ));
+}
 
-        match token::contract_effective_init_config(manifest, name) {
-            Ok(Some(init)) => {
-                let required = ["admin", "name", "symbol", "decimals"];
-                let missing = required
-                    .into_iter()
-                    .filter(|field| {
-                        init.args
-                            .get(*field)
-                            .is_none_or(|value| value.trim().is_empty())
-                    })
-                    .collect::<Vec<_>>();
-                let defaulted = required
-                    .into_iter()
-                    .filter(|field| {
-                        contract
-                            .init
-                            .as_ref()
-                            .and_then(|init| init.args.get(*field))
-                            .is_none_or(|value| value.trim().is_empty())
-                    })
-                    .collect::<Vec<_>>();
-                let arg_names = init.args.keys().cloned().collect::<Vec<_>>().join(", ");
-                let mut detail = format!(
-                    "fn={}, args={}",
-                    init.fn_name,
-                    if arg_names.is_empty() {
-                        "<none>"
-                    } else {
-                        &arg_names
-                    }
-                );
-                if !defaulted.is_empty() {
-                    detail.push_str(&format!(
-                        "; derived defaults applied for {}",
-                        defaulted.join(", ")
-                    ));
-                }
-                if !missing.is_empty() {
-                    detail.push_str(&format!("; missing {}", missing.join(", ")));
-                }
-                report.checks.push(check(
-                    format!("token:{name}:init"),
-                    if missing.is_empty() { "ok" } else { "error" },
-                    Some(detail),
-                ));
-            }
-            Ok(None) => report.checks.push(check(
+fn append_contract_token_init_check(
+    report: &mut CommandReport,
+    manifest: &Manifest,
+    name: &str,
+    contract: &ContractConfig,
+) {
+    match token::contract_effective_init_config(manifest, name) {
+        Ok(Some(init)) => {
+            let required = ["admin", "name", "symbol", "decimals"];
+            let missing = required
+                .into_iter()
+                .filter(|field| {
+                    init.args
+                        .get(*field)
+                        .is_none_or(|value| value.trim().is_empty())
+                })
+                .collect::<Vec<_>>();
+            let defaulted = required
+                .into_iter()
+                .filter(|field| {
+                    contract
+                        .init
+                        .as_ref()
+                        .and_then(|init| init.args.get(*field))
+                        .is_none_or(|value| value.trim().is_empty())
+                })
+                .collect::<Vec<_>>();
+            report.checks.push(check(
                 format!("token:{name}:init"),
-                "error",
-                Some("no init configuration is available".to_string()),
-            )),
-            Err(error) => report.checks.push(check(
-                format!("token:{name}:init"),
-                "error",
-                Some(error.to_string()),
-            )),
+                if missing.is_empty() { "ok" } else { "error" },
+                Some(contract_token_init_detail(&init, &missing, &defaulted)),
+            ));
         }
+        Ok(None) => report.checks.push(check(
+            format!("token:{name}:init"),
+            "error",
+            Some("no init configuration is available".to_string()),
+        )),
+        Err(error) => report.checks.push(check(
+            format!("token:{name}:init"),
+            "error",
+            Some(error.to_string()),
+        )),
     }
+}
+
+fn contract_token_init_detail(
+    init: &crate::model::ContractInitConfig,
+    missing: &[&str],
+    defaulted: &[&str],
+) -> String {
+    let arg_names = init.args.keys().cloned().collect::<Vec<_>>().join(", ");
+    let mut detail = format!(
+        "fn={}, args={}",
+        init.fn_name,
+        if arg_names.is_empty() {
+            "<none>"
+        } else {
+            &arg_names
+        }
+    );
+    if !defaulted.is_empty() {
+        detail.push_str(&format!(
+            "; derived defaults applied for {}",
+            defaulted.join(", ")
+        ));
+    }
+    if !missing.is_empty() {
+        detail.push_str(&format!("; missing {}", missing.join(", ")));
+    }
+    detail
 }
 
 pub(super) fn project_validation_report(context: &AppContext) -> Result<CommandReport> {
@@ -1373,6 +1509,18 @@ pub(super) fn event_worker_config_check(
     let paths = event_store_paths(root);
     let mut issues = Vec::new();
 
+    append_positive_event_env_issues(&env, &mut issues);
+    append_event_type_issue(&env, &mut issues);
+    append_event_resource_issue(&env, manifest, &mut issues);
+
+    Some(check(
+        label,
+        event_config_status(&issues, strict),
+        Some(event_config_detail(&issues, &paths)),
+    ))
+}
+
+fn append_positive_event_env_issues(env: &BTreeMap<String, String>, issues: &mut Vec<String>) {
     for key in [
         "STELLAR_EVENTS_BATCH_SIZE",
         "STELLAR_EVENTS_POLL_INTERVAL_MS",
@@ -1390,7 +1538,9 @@ pub(super) fn event_worker_config_check(
             issues.push(format!("{key} must be a positive integer"));
         }
     }
+}
 
+fn append_event_type_issue(env: &BTreeMap<String, String>, issues: &mut Vec<String>) {
     if let Some(value) = env.get("STELLAR_EVENTS_TYPE")
         && !value.trim().is_empty()
         && !matches!(value.trim(), "all" | "contract" | "system")
@@ -1398,38 +1548,47 @@ pub(super) fn event_worker_config_check(
         issues
             .push("STELLAR_EVENTS_TYPE must be one of `all`, `contract`, or `system`".to_string());
     }
+}
 
-    if let Some(value) = env.get("STELLAR_EVENTS_RESOURCES") {
-        let unknown = parse_env_list(value, &[',', '\n'])
-            .into_iter()
-            .find(|resource| !event_resource_exists(manifest, resource));
-        if let Some(resource) = unknown {
-            issues.push(format!(
-                "STELLAR_EVENTS_RESOURCES references undeclared resource `{resource}`"
-            ));
-        }
+fn append_event_resource_issue(
+    env: &BTreeMap<String, String>,
+    manifest: &Manifest,
+    issues: &mut Vec<String>,
+) {
+    let Some(value) = env.get("STELLAR_EVENTS_RESOURCES") else {
+        return;
+    };
+    let unknown = parse_env_list(value, &[',', '\n'])
+        .into_iter()
+        .find(|resource| !event_resource_exists(manifest, resource));
+    if let Some(resource) = unknown {
+        issues.push(format!(
+            "STELLAR_EVENTS_RESOURCES references undeclared resource `{resource}`"
+        ));
     }
+}
 
-    Some(check(
-        label,
-        if issues.is_empty() {
-            "ok"
-        } else if strict {
-            "error"
-        } else {
-            "warn"
-        },
-        Some(if issues.is_empty() {
-            format!(
-                "db={}, schema={}, cursor_snapshot={}",
-                paths.db_path.display(),
-                paths.schema_path.display(),
-                paths.snapshot_path.display()
-            )
-        } else {
-            issues.join("; ")
-        }),
-    ))
+fn event_config_status(issues: &[String], strict: bool) -> &'static str {
+    if issues.is_empty() {
+        "ok"
+    } else if strict {
+        "error"
+    } else {
+        "warn"
+    }
+}
+
+fn event_config_detail(issues: &[String], paths: &EventStorePaths) -> String {
+    if issues.is_empty() {
+        format!(
+            "db={}, schema={}, cursor_snapshot={}",
+            paths.db_path.display(),
+            paths.schema_path.display(),
+            paths.snapshot_path.display()
+        )
+    } else {
+        issues.join("; ")
+    }
 }
 
 fn parse_env_list(value: &str, separators: &[char]) -> Vec<String> {
