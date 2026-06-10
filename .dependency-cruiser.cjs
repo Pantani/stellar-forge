@@ -103,10 +103,21 @@ module.exports = {
       severity: "error",
       comment: "Repository and demo helper scripts should orchestrate commands, not import API or web internals directly.",
       from: {
-        path: "^(scripts/|demo/scripts/|demo/workers/|demo/apps/web/scripts/)",
+        path: "^(scripts/|demo/scripts/|demo/workers/)",
       },
       to: {
         path: "^demo/apps/(api|web)/src/",
+      },
+    },
+    {
+      name: "web-scripts-do-not-depend-on-api-internals",
+      severity: "error",
+      comment: "Web app scripts may automate the frontend surface, but must not import API internals.",
+      from: {
+        path: "^demo/apps/web/scripts/",
+      },
+      to: {
+        path: "^demo/apps/api/src/",
       },
     },
   ],
