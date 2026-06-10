@@ -6414,6 +6414,47 @@ fn doctor_network_dry_run_plans_endpoint_probes() {
 }
 
 #[test]
+fn doctor_network_reports_invalid_endpoint_urls() {
+    let root = init_rewards_project();
+    let manifest_path = root.join("stellarforge.toml");
+    let manifest = read(&manifest_path)
+        .replace(
+            "rpc_url = \"https://soroban-testnet.stellar.org\"",
+            "rpc_url = \"://bad-rpc\"",
+        )
+        .replace(
+            "horizon_url = \"https://horizon-testnet.stellar.org\"",
+            "horizon_url = \"://bad-horizon\"",
+        );
+    fs::write(&manifest_path, manifest).expect("manifest should be writable");
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "--dry-run", "doctor", "network", "testnet"])
+        .output()
+        .expect("command should run");
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "doctor.network");
+    assert_eq!(find_check(&json, "rpc")["status"], "warn");
+    assert_eq!(find_check(&json, "horizon")["status"], "warn");
+    assert!(
+        find_check(&json, "rpc")["detail"]
+            .as_str()
+            .expect("rpc detail should be present")
+            .contains("invalid rpc_url `://bad-rpc`")
+    );
+    assert!(
+        find_check(&json, "horizon")["detail"]
+            .as_str()
+            .expect("horizon detail should be present")
+            .contains("invalid horizon_url `://bad-horizon`")
+    );
+}
+
+#[test]
 fn dev_status_dry_run_writes_report_to_out_path() {
     let root = init_rewards_project();
     let out_path = root.join("dist/dev.status.json");

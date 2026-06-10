@@ -155,6 +155,42 @@ warning_contains = ["this warning does not exist"]
 }
 
 #[test]
+fn scenario_test_rejects_zero_step_assertion_index() {
+    let root = init_rewards_project();
+    append_to_manifest(
+        &root,
+        r#"
+[scenarios.zero-step]
+description = "Invalid assertion index"
+
+[[scenarios.zero-step.steps]]
+action = "project.sync"
+
+[[scenarios.zero-step.assertions]]
+assertion = "step"
+step = 0
+status = "ok"
+"#,
+    );
+
+    let output = Command::cargo_bin("stellar-forge")
+        .expect("binary should build")
+        .current_dir(&root)
+        .args(["--json", "scenario", "test", "zero-step"])
+        .output()
+        .expect("scenario test should run");
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be valid json");
+    assert_eq!(json["action"], "scenario.test");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["data"]["exit_code"], 2);
+    let message = json["message"].as_str().expect("message should be present");
+    assert!(message.contains("invalid step `0`"), "{message}");
+    assert!(message.contains("step indexes start at 1"), "{message}");
+}
+
+#[test]
 fn scenario_run_executes_non_chain_workspace_steps() {
     let root = init_rewards_project();
     append_to_manifest(

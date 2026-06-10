@@ -866,39 +866,46 @@ fn append_rpc_network_checks(
     report: &mut CommandReport,
     network: &NetworkConfig,
 ) {
-    if let Ok(rpc_url) = Url::parse(&network.rpc_url) {
-        report.commands.push(format!("POST {rpc_url}"));
-        if context.globals.dry_run {
-            report.checks.push(check(
-                "rpc",
-                "warn",
-                Some(format!("skipped in --dry-run: {}", network.rpc_url)),
-            ));
-        } else {
-            let response = context.post_json(
-                &rpc_url,
-                &json!({"jsonrpc":"2.0","id":"health","method":"getHealth"}),
-            );
-            match response {
-                Ok(_) => report
-                    .checks
-                    .push(check("rpc", "ok", Some(network.rpc_url.clone()))),
-                Err(error) => report
-                    .checks
-                    .push(check("rpc", "warn", Some(error.to_string()))),
+    match Url::parse(&network.rpc_url) {
+        Ok(rpc_url) => {
+            report.commands.push(format!("POST {rpc_url}"));
+            if context.globals.dry_run {
+                report.checks.push(check(
+                    "rpc",
+                    "warn",
+                    Some(format!("skipped in --dry-run: {}", network.rpc_url)),
+                ));
+            } else {
+                let response = context.post_json(
+                    &rpc_url,
+                    &json!({"jsonrpc":"2.0","id":"health","method":"getHealth"}),
+                );
+                match response {
+                    Ok(_) => report
+                        .checks
+                        .push(check("rpc", "ok", Some(network.rpc_url.clone()))),
+                    Err(error) => report
+                        .checks
+                        .push(check("rpc", "warn", Some(error.to_string()))),
+                }
+            }
+            if network.kind == "local" {
+                report.checks.push(check(
+                    "rpc-host",
+                    if rpc_url.host_str().is_some_and(is_loopback_host) {
+                        "ok"
+                    } else {
+                        "warn"
+                    },
+                    Some(rpc_url.host_str().unwrap_or("<missing-host>").to_string()),
+                ));
             }
         }
-        if network.kind == "local" {
-            report.checks.push(check(
-                "rpc-host",
-                if rpc_url.host_str().is_some_and(is_loopback_host) {
-                    "ok"
-                } else {
-                    "warn"
-                },
-                Some(rpc_url.host_str().unwrap_or("<missing-host>").to_string()),
-            ));
-        }
+        Err(error) => report.checks.push(check(
+            "rpc",
+            "warn",
+            Some(format!("invalid rpc_url `{}`: {error}", network.rpc_url)),
+        )),
     }
 }
 
@@ -907,43 +914,55 @@ fn append_horizon_network_checks(
     report: &mut CommandReport,
     network: &NetworkConfig,
 ) {
-    if let Ok(horizon_url) = Url::parse(&network.horizon_url) {
-        report.commands.push(format!("GET {horizon_url}"));
-        if context.globals.dry_run {
-            report.checks.push(check(
-                "horizon",
-                "warn",
-                Some(format!("skipped in --dry-run: {}", network.horizon_url)),
-            ));
-        } else {
-            let response = context.get_json(&horizon_url);
-            match response {
-                Ok(_) => {
-                    report
-                        .checks
-                        .push(check("horizon", "ok", Some(network.horizon_url.clone())))
+    match Url::parse(&network.horizon_url) {
+        Ok(horizon_url) => {
+            report.commands.push(format!("GET {horizon_url}"));
+            if context.globals.dry_run {
+                report.checks.push(check(
+                    "horizon",
+                    "warn",
+                    Some(format!("skipped in --dry-run: {}", network.horizon_url)),
+                ));
+            } else {
+                let response = context.get_json(&horizon_url);
+                match response {
+                    Ok(_) => report.checks.push(check(
+                        "horizon",
+                        "ok",
+                        Some(network.horizon_url.clone()),
+                    )),
+                    Err(error) => {
+                        report
+                            .checks
+                            .push(check("horizon", "warn", Some(error.to_string())))
+                    }
                 }
-                Err(error) => report
-                    .checks
-                    .push(check("horizon", "warn", Some(error.to_string()))),
+            }
+            if network.kind == "local" {
+                report.checks.push(check(
+                    "horizon-host",
+                    if horizon_url.host_str().is_some_and(is_loopback_host) {
+                        "ok"
+                    } else {
+                        "warn"
+                    },
+                    Some(
+                        horizon_url
+                            .host_str()
+                            .unwrap_or("<missing-host>")
+                            .to_string(),
+                    ),
+                ));
             }
         }
-        if network.kind == "local" {
-            report.checks.push(check(
-                "horizon-host",
-                if horizon_url.host_str().is_some_and(is_loopback_host) {
-                    "ok"
-                } else {
-                    "warn"
-                },
-                Some(
-                    horizon_url
-                        .host_str()
-                        .unwrap_or("<missing-host>")
-                        .to_string(),
-                ),
-            ));
-        }
+        Err(error) => report.checks.push(check(
+            "horizon",
+            "warn",
+            Some(format!(
+                "invalid horizon_url `{}`: {error}",
+                network.horizon_url
+            )),
+        )),
     }
 }
 

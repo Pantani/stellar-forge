@@ -2483,7 +2483,12 @@ fn evaluate_step_assertion(
     else {
         unreachable!("evaluate_step_assertion only accepts step assertions");
     };
-    let report = step_reports.get(step.saturating_sub(1)).ok_or_else(|| {
+    let step_index = step.checked_sub(1).ok_or_else(|| {
+        anyhow!(
+            "scenario `{scenario_name}` assertion references invalid step `{step}`; step indexes start at 1"
+        )
+    })?;
+    let report = step_reports.get(step_index).ok_or_else(|| {
         anyhow!("scenario `{scenario_name}` assertion references missing step `{step}`")
     })?;
     if let Some(status) = status.as_deref()
