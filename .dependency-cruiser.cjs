@@ -103,7 +103,7 @@ module.exports = {
       severity: "error",
       comment: "Repository and demo helper scripts should orchestrate commands, not import API or web internals directly.",
       from: {
-        path: "^(scripts/|demo/scripts/|demo/workers/)",
+        path: "^(scripts/|demo/scripts/|demo/workers/|demo/apps/web/scripts/)",
       },
       to: {
         path: "^demo/apps/(api|web)/src/",
